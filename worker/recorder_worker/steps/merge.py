@@ -15,7 +15,7 @@ from ..session import Session, base_name, speaker_for
 from ..util import atomic_write_json, atomic_write_text, fmt_ts, read_json
 from .audio import usable_tracks
 from .echo import TrackEnvelope, envelope, is_audio_echo
-from .speakers import assign_speakers
+from .speakers import assign_speakers, rejoin, split_path
 
 log = logging.getLogger("recorder")
 
@@ -65,16 +65,20 @@ def merge_tracks(tracks: dict[str, list[dict]], audio_echo=None) -> tuple[list[d
     return merged, echoes
 
 
+OVERLAP_MARK = "(a la vez)"  # la app lo muestra como etiqueta
+
+
 def group_turns(segs: list[dict], gap_s: float = 2.0) -> list[dict]:
     """Agrupa segmentos consecutivos del mismo hablante en turnos."""
     turns: list[dict] = []
     for s in segs:
         cur = turns[-1] if turns else None
+        text = f"{OVERLAP_MARK} {s['text']}" if s.get("overlap") else s["text"]
         if cur and cur["speaker"] == s["speaker"] and s["start"] - cur["end"] <= gap_s:
-            cur["text"] += " " + s["text"]
+            cur["text"] += " " + text
             cur["end"] = max(cur["end"], s["end"])
         else:
-            turns.append({"speaker": s["speaker"], "start": s["start"], "end": s["end"], "text": s["text"]})
+            turns.append({"speaker": s["speaker"], "start": s["start"], "end": s["end"], "text": text})
     return turns
 
 
@@ -120,8 +124,11 @@ class Merge:
     def run(self, s: Session, cfg: Config) -> None:
         tracks: dict[str, list[dict]] = {}
         for t in usable_tracks(s):
-            segs = read_json(s.segments(t.name))["segments"]
-            tracks[t.name] = [{**x, "start": round(x["start"] + t.offset_s, 2),
+            # frases cortadas por cambio de voz si existen (mismo orden que sus huellas)
+            src = split_path(s, t.name)
+            segs = read_json(src if src.is_file() else s.segments(t.name))["segments"]
+            tracks[t.name] = [{**{k: v for k, v in x.items() if k != "words"},
+                               "start": round(x["start"] + t.offset_s, 2),
                                "end": round(x["end"] + t.offset_s, 2)} for x in segs]
         try:
             n_voices = assign_speakers(cfg, s, tracks)
@@ -129,6 +136,7 @@ class Merge:
                 log.info("[%s] %d voces distintas entre los participantes", s.id, n_voices)
         except Exception:  # noqa: BLE001  (si falla, queda "Participantes")
             log.warning("[%s] no se pudieron separar las voces", s.id, exc_info=True)
+        tracks = {name: rejoin(segs) for name, segs in tracks.items()}
         merged, echoes = merge_tracks(tracks, audio_echo=self._audio_echo(s))
         if echoes:
             log.info("[%s] %d segmentos de eco descartados del micrófono", s.id, echoes)

@@ -68,6 +68,11 @@ class SpeakersConfig:
     model: Path = MODELS_DIR / "wespeaker_en_voxceleb_resnet34.onnx"
     threshold: float = 0.3   # distancia coseno; medido: 0.20-0.35 separa al 100 %
     min_share: float = 0.03  # voces con menos del 3 % del tiempo se reasignan
+    # pyannote: dónde cambia la persona (también dentro de una frase) y cuándo hablan a la vez
+    segmentation: Path = MODELS_DIR / "pyannote-segmentation-3.0.onnx"
+    # recordar voces con nombre entre reuniones (similitud coseno mínima)
+    remember: bool = True
+    recall_threshold: float = 0.6
 
 
 @dataclass
@@ -175,6 +180,8 @@ def load_config(path: Path | None = None) -> Config:
         sp = dict(data.get("speakers", {}))
         if sp.get("model"):
             cfg.speakers.model = _p(sp.pop("model"))
+        if "segmentation" in sp:
+            cfg.speakers.segmentation = _p(sp.pop("segmentation"))
         _apply(cfg.speakers, sp)
         _apply(cfg.deepseek, data.get("deepseek", {}))
         _apply(cfg.local, data.get("local", {}))

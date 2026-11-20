@@ -857,7 +857,7 @@ struct TranscriptView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             SpeakerName(raw: line.speaker, session: session, model: model)
                                 .padding(.top, 4)
-                            Text(line.text)
+                            transcriptText(line.text)
                                 .font(.system(size: 16))
                                 .lineSpacing(16 * 0.7 - 4)
                                 .foregroundStyle(T.text2)
@@ -983,6 +983,17 @@ struct Waveform: View {
         }
         .help("Clic para ir a ese momento")
     }
+}
+
+/// Texto de un turno; "(a la vez)" (dos personas hablando a la vez) se muestra como etiqueta.
+func transcriptText(_ s: String) -> Text {
+    let mark = "(a la vez)"
+    let parts = s.components(separatedBy: mark)
+    var out = Text(parts[0])
+    for p in parts.dropFirst() {
+        out = out + Text("⟷ a la vez").font(.system(size: 12, weight: .semibold)).foregroundColor(T.accent) + Text(p)
+    }
+    return out
 }
 
 struct TranscriptLine: Identifiable {
@@ -1232,7 +1243,7 @@ struct LiveText: View {
                         .frame(width: 70, alignment: .leading)
                     VStack(alignment: .leading, spacing: 6) {
                         SpeakerName(raw: line.speaker, session: session, model: model)
-                        Text(line.text).font(.system(size: 15)).foregroundStyle(T.text2)
+                        transcriptText(line.text).font(.system(size: 15)).foregroundStyle(T.text2)
                             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
                 }

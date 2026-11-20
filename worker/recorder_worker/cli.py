@@ -272,6 +272,7 @@ DOWNLOADS = {
     "vad_model": "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
     "speakers_model": "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
                       "speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
+    "segmentation_model": "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
 }
 
 
@@ -296,6 +297,10 @@ def doctor_components(cfg: Config) -> list[dict]:
                       "detail": "Distingue Persona 1, Persona 2…",
                       "path": str(cfg.speakers.model), "ok": cfg.speakers.model.is_file(),
                       "url": DOWNLOADS["speakers_model"], "size_mb": 26, "optional": True})
+        items.append({"id": "segmentation_model", "name": "Cambios de voz (pyannote)",
+                      "detail": "Corta donde cambia la persona y marca cuando hablan a la vez",
+                      "path": str(cfg.speakers.segmentation), "ok": cfg.speakers.segmentation.is_file(),
+                      "url": DOWNLOADS["segmentation_model"], "size_mb": 6, "optional": True})
     return items
 
 
@@ -314,6 +319,8 @@ def cmd_doctor(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
         ("ffmpeg", shutil.which("ffmpeg") or "no encontrado", bool(shutil.which("ffmpeg"))),
         ("separar voces", str(cfg.speakers.model) if cfg.speakers.enabled else "desactivado",
          (not cfg.speakers.enabled) or cfg.speakers.model.is_file()),
+        ("cambios de voz", str(cfg.speakers.segmentation) if cfg.speakers.enabled else "desactivado",
+         (not cfg.speakers.enabled) or cfg.speakers.segmentation.is_file()),
         ("glosario", str(cfg.whisper.glossary_file), bool(cfg.whisper.glossary_file and cfg.whisper.glossary_file.is_file())),
         ("sesiones", str(cfg.paths.sessions), cfg.paths.sessions.is_dir()),
         ("bandeja", str(cfg.paths.inbox), True),

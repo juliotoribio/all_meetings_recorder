@@ -1,6 +1,6 @@
 # All Meetings Recorder
 
-Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junto con tu micrófono y lo transcribe **en tu propio Mac** con Whisper. También separa las voces (Persona 1, Persona 2…).
+Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junto con tu micrófono y lo transcribe **en tu propio Mac** con Whisper. También separa las voces (Persona 1, Persona 2…), detecta cuándo hablan dos a la vez y **recuerda las voces**: cuando le pones nombre a alguien, en las reuniones siguientes aparece ya con su nombre.
 
 - **Privado:** el audio nunca sale del Mac. No hace falta internet ni cuentas.
 - **Gratis:** no usa APIs de pago. El resumen con IA es opcional y sólo se hace si lo pides.
@@ -110,6 +110,7 @@ El código de este repositorio es [MIT](LICENSE).
 |---|---|
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) y los modelos Whisper | MIT |
 | [Silero VAD](https://github.com/snakers4/silero-vad) | MIT |
+| [pyannote segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) (ONNX de sherpa-onnx) | MIT |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | Apache 2.0 |
 | Modelo de voces [WeSpeaker](https://github.com/wenet-e2e/wespeaker) (ResNet34, VoxCeleb) | revisa su licencia antes de un uso comercial |
 | [FFmpeg](https://ffmpeg.org) | LGPL/GPL |

@@ -177,3 +177,56 @@ def test_glossary_prompt_language(tmp_path):
     cfg.whisper.glossary_file = g
     assert glossary_prompt(cfg, "es") == "Glosario: Laura, OKR."
     assert glossary_prompt(cfg, "auto") == "Laura, OKR."
+
+
+def test_split_by_turns_cuts_at_speaker_change_and_marks_overlap():
+    from recorder_worker.steps.speakers import rejoin, split_by_turns
+
+    words = [[0.0, 0.4, "Creo"], [0.4, 0.8, "que"], [0.8, 1.2, "sí."], [1.3, 1.7, "Pues"],
+             [1.7, 2.1, "yo"], [2.1, 2.5, "no"], [2.5, 2.9, "estoy"], [2.9, 3.3, "seguro."]]
+    seg = {"start": 0.0, "end": 3.3, "text": "Creo que sí. Pues yo no estoy seguro.", "words": words}
+    turns = [(0.0, 1.25, 0), (1.25, 3.4, 1), (2.0, 3.4, 0)]  # al final hablan los dos
+    out = split_by_turns([seg], turns)
+    assert [x["text"] for x in out] == ["Creo que sí.", "Pues yo no estoy seguro."]
+    assert out[1].get("overlap") and not out[0].get("overlap")
+    assert all("words" not in x for x in out)
+    # si al final resultan ser la misma voz, la frase vuelve a quedar entera
+    for x in out:
+        x["speaker"] = "Persona 1"
+    assert [x["text"] for x in rejoin(out)] == ["Creo que sí. Pues yo no estoy seguro."]
+
+
+def test_split_by_turns_ignores_tiny_fragments():
+    from recorder_worker.steps.speakers import split_by_turns
+
+    words = [[0.0, 0.3, "Vale,"], [0.3, 0.7, "lo"], [0.7, 1.1, "reviso"], [1.1, 1.5, "mañana."]]
+    seg = {"start": 0.0, "end": 1.5, "text": "Vale, lo reviso mañana.", "words": words}
+    out = split_by_turns([seg], [(0.0, 0.25, 0), (0.25, 1.6, 1)])
+    assert [x["text"] for x in out] == ["Vale, lo reviso mañana."]
+
+
+def test_voice_memory_recalls_named_voice(tmp_path):
+    import json
+
+    import numpy as np
+
+    from recorder_worker.config import load_config
+    from recorder_worker.session import Session
+    from recorder_worker.steps.speakers import load_profiles, recall
+
+    cfg = load_config()
+    cfg.paths.sessions = tmp_path
+    rng = np.random.default_rng(0)
+    laura, carlos = rng.normal(size=192), rng.normal(size=192)
+    old = tmp_path / "old"
+    (old / "work").mkdir(parents=True)
+    (old / "work" / "voices.json").write_text(json.dumps({"Persona 1": laura.tolist(), "Persona 2": carlos.tolist()}))
+    (old / "manifest.json").write_text(json.dumps({"speaker_names": {"Persona 1": "Laura"}}))
+    assert set(load_profiles(cfg)) == {"Laura"}  # Persona 2 sin nombre: no se recuerda
+
+    new = tmp_path / "new"
+    (new / "work").mkdir(parents=True)
+    (new / "manifest.json").write_text("{}")
+    unit = lambda v: v / np.linalg.norm(v)  # noqa: E731
+    cents = {0: unit(carlos), 1: unit(laura + rng.normal(scale=0.3, size=192))}
+    assert recall(cfg, Session(new), cents) == {1: "Laura"}

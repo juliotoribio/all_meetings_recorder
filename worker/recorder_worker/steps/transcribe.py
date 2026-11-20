@@ -188,11 +188,25 @@ def _split_segment(seg: dict, vad: VadMap | None = None) -> list[dict]:
             return vad.real(ms / 1000)
         return (start_ms + (ms - t0) / span * (end_ms - start_ms)) / 1000
 
+    def tok_start(t: dict) -> float:
+        o = t["offsets"]
+        return vad.real_start(o["from"] / 1000, o["to"] / 1000) if vad else real(o["from"])
+
+    def words(tokens: list[dict]) -> list[list]:
+        """[inicio, fin, palabra] (para cortar la frase donde cambia la voz)."""
+        out: list[list] = []
+        for t in tokens:
+            if t["text"].startswith(" ") or not out:
+                out.append([tok_start(t), real(t["offsets"]["to"]), t["text"].strip()])
+            else:
+                out[-1][1] = real(t["offsets"]["to"])
+                out[-1][2] += t["text"]
+        return [w for w in out if w[2]]
+
     def piece(tokens: list[dict], text: str) -> dict:
-        first = tokens[0]["offsets"]
-        a = vad.real_start(first["from"] / 1000, first["to"] / 1000) if vad else real(first["from"])
+        a = tok_start(tokens[0])
         b = real(tokens[-1]["offsets"]["to"])
-        return {"start": a, "end": max(a, b), "text": text}
+        return {"start": a, "end": max(a, b), "text": text, "words": words(tokens)}
 
     pieces: list[dict] = []
     buf: list[dict] = []
@@ -210,6 +224,7 @@ def _split_segment(seg: dict, vad: VadMap | None = None) -> list[dict]:
         if pieces and len(text.split()) < 3:
             pieces[-1]["text"] += " " + text
             pieces[-1]["end"] = max(pieces[-1]["end"], real(buf[-1]["offsets"]["to"]))
+            pieces[-1]["words"] += words(buf)
         elif text:
             pieces.append(piece(buf, text))
     # Sin mapa VAD, el primer/último trozo hereda los bordes del segmento.
@@ -227,6 +242,8 @@ def parse_whisper_json(path: Path, offset_s: float = 0.0, vad: VadMap | None = N
         for p in _split_segment(seg, vad):
             p["start"] = round(p["start"] + offset_s, 2)
             p["end"] = round(p["end"] + offset_s, 2)
+            if "words" in p:
+                p["words"] = [[round(a + offset_s, 2), round(b + offset_s, 2), w] for a, b, w in p["words"]]
             out.append(p)
     return out
 
