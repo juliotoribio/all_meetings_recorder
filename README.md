@@ -94,6 +94,10 @@ rm -rf ~/RecorderJT   # ⚠️ borra también las grabaciones y los modelos
 
 En muchos países es obligatorio avisar a las personas antes de grabarlas. Hacerlo es responsabilidad de quien usa la app.
 
+## Licencia
+
+El código de este repositorio es [MIT](LICENSE).
+
 ## Componentes de terceros
 
 | Componente | Licencia |
