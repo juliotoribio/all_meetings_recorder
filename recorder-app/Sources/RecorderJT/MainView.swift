@@ -131,7 +131,9 @@ final class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if player.currentTime >= player.duration - 0.05 { player.currentTime = 0 }
         player.play(); isPlaying = true
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // 4 veces por segundo: suficiente para el reloj y el cursor (en 1 h de audio
+        // la onda avanza menos de 1 px por segundo) y la mitad de trabajo que a 10.
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.time = self?.player?.currentTime ?? 0 }
         }
     }
@@ -158,35 +160,57 @@ enum HistoryFilter: String, CaseIterable {
     case all = "Todas", meetings = "Reuniones", uploads = "Subidas", errors = "Errores"
 }
 
+enum AppSection { case home, library }
+
 struct MainView: View {
     @ObservedObject var model: AppModel
-    @StateObject private var player = AudioPlayer()
+    /// @State (no @StateObject): la ventana no se suscribe al reproductor, que
+    /// publica 10 veces por segundo; sólo lo observan la tarjeta de audio y la lista.
+    @State private var player = AudioPlayer()
     @State private var selection: String?
     @State private var search = ""
     @State private var filter: HistoryFilter = .all
     @State private var dropping = false
+    @State private var section: AppSection = .home
+    @State private var showSetup = false
+    @ObservedObject private var setup = SetupModel.shared
 
     private var selected: SessionInfo? { model.sessions.first { $0.id == selection } }
+    /// Mientras se graba se muestra siempre la vista de grabaciones (como el diseño).
+    private var showLibrary: Bool { section == .library || model.isRecording }
 
     var body: some View {
         VStack(spacing: 0) {
-            Header(model: model, filter: $filter)
+            Header(model: model, filter: $filter, showFilters: showLibrary)
             Rectangle().fill(T.line).frame(height: 1)
-            HStack(alignment: .top, spacing: 16) {
-                Sidebar(model: model, selection: $selection, search: $search, filter: filter)
-                    .frame(width: 300)
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            HStack(spacing: 0) {
+                NavRail(current: showLibrary ? .library : .home, go: { section = $0 }, openSettings: { showSetup = true })
+                Rectangle().fill(T.line).frame(width: 1)
+                if showLibrary {
+                    HStack(alignment: .top, spacing: 16) {
+                        Sidebar(model: model, selection: $selection, search: $search, filter: filter)
+                            .frame(width: 300)
+                        detail
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    }
+                    .padding(16)
+                } else {
+                    HomeView(model: model, openSetup: { showSetup = true }) { id in
+                        filter = .all
+                        if let id { selection = id }
+                        section = .library
+                    }
+                }
             }
-            .padding(16)
         }
         .background(T.bg)
         .ignoresSafeArea(edges: .top)
         .foregroundStyle(T.text)
         .tint(T.accent)
         .preferredColorScheme(.dark)
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(minWidth: 980, minHeight: 600)
         .dropDestination(for: URL.self) { urls, _ in
+            section = .library
             model.importAudio(urls)
             return true
         } isTargeted: { dropping = $0 }
@@ -205,13 +229,27 @@ struct MainView: View {
                     .allowsHitTesting(false)
             }
         }
+        .sheet(isPresented: $showSetup) { SetupView { showSetup = false } }
         .onAppear {
+            setup.check()
+            let env = ProcessInfo.processInfo.environment
+            if env["RJT_SECTION"] == "library" { section = .library }  // capturas
             if selection == nil { selection = model.sessions.first?.id }
             player.load(selected)
+            // Medición (sólo con datos de demostración): reproduce la primera grabación.
+            if env["RJT_HOME"] != nil, env["RJT_TEST_PLAY"] != nil {
+                section = .library
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { player.play() }
+            }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSetup)) { _ in showSetup = true }
         .onChange(of: model.sessions.first?.id) { _, newest in
-            if model.isRecording || model.importing > 0 { selection = newest }
+            if model.isRecording || model.importing > 0 {
+                selection = newest
+                section = .library
+            }
         }
+        .onChange(of: model.importing) { _, n in if n > 0 { section = .library } }
         .onChange(of: selected) { _, s in player.load(s) }
     }
 
@@ -240,6 +278,45 @@ struct MainView: View {
     }
 }
 
+// MARK: - navegación
+
+struct NavRail: View {
+    let current: AppSection
+    let go: (AppSection) -> Void
+    let openSettings: () -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            item("Inicio", icon: "house", on: current == .home) { go(.home) }
+            item("Grabaciones", icon: "waveform", on: current == .library) { go(.library) }
+            Spacer()
+            item("Ajustes", icon: "slider.horizontal.3", on: false, action: openSettings)
+                .help("Configuración: Whisper y los modelos (⌘,)")
+        }
+        .padding(.vertical, 16).padding(.horizontal, 8)
+        .frame(width: 80)
+        .frame(maxHeight: .infinity)
+    }
+
+    private func item(_ label: String, icon: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(on ? T.accent : T.muted)
+                    .frame(height: 20)
+                Text(label).font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(on ? T.text : T.muted)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .frame(width: 64, height: 60)
+            .background(on ? Color(hex: 0x1E1E1E) : .clear, in: RoundedRectangle(cornerRadius: 14))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
 /// Permite arrastrar la ventana desde la cabecera (la barra de título es transparente).
 struct WindowDragArea: NSViewRepresentable {
     final class DragView: NSView {
@@ -257,33 +334,140 @@ struct WindowDragArea: NSViewRepresentable {
 struct Header: View {
     @ObservedObject var model: AppModel
     @Binding var filter: HistoryFilter
+    let showFilters: Bool
 
     var body: some View {
         ZStack {
             WindowDragArea()
-            HStack(spacing: 4) {
-                ForEach(HistoryFilter.allCases, id: \.self) { f in
-                    Button { filter = f } label: {
-                        Text(f.rawValue)
-                            .font(.system(size: 14.5))
-                            .foregroundStyle(filter == f ? T.text : T.dim)
-                            .padding(.horizontal, 14).frame(height: 32)
-                            .overlay(Capsule().strokeBorder(filter == f ? T.text : .clear, lineWidth: 1))
-                            .contentShape(Capsule())
+            if showFilters {
+                HStack(spacing: 4) {
+                    ForEach(HistoryFilter.allCases, id: \.self) { f in
+                        Button { filter = f } label: {
+                            Text(f.rawValue)
+                                .font(.system(size: 14.5))
+                                .foregroundStyle(filter == f ? T.text : T.dim)
+                                .padding(.horizontal, 14).frame(height: 34)
+                                .overlay(Capsule().strokeBorder(filter == f ? T.text : .clear, lineWidth: 1))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            HStack {
+            HStack(spacing: 6) {
                 Text("All Meetings Recorder").font(.system(size: 15, weight: .medium))
                     .padding(.leading, 84)  // deja sitio a los botones de la ventana
                     .allowsHitTesting(false)
                 Spacer()
-                RecordButton(model: model)
+                SourceToggle(kind: .mic, on: model.micOn) { model.setMic(!model.micOn) }
+                SourceToggle(kind: .meeting, on: model.systemOn) { model.setSystem(!model.systemOn) }
+                SettingsPill(model: model)
+                RecordButton(model: model).padding(.leading, 4)
             }
             .padding(.trailing, 16)
         }
-        .frame(height: 52)
+        .frame(height: AppDelegate.headerHeight)
+    }
+}
+
+/// Botón redondo para encender/apagar una fuente (micrófono o audio de la reunión).
+struct SourceToggle: View {
+    enum Kind { case mic, meeting }
+    let kind: Kind
+    let on: Bool
+    let toggle: () -> Void
+
+    private var label: String { kind == .mic ? "Mi micrófono" : "Audio de la reunión" }
+
+    var body: some View {
+        Button(action: toggle) {
+            ZStack {
+                Image(systemName: kind == .mic ? "mic" : "speaker.wave.2")
+                    .font(.system(size: 15, weight: .regular))
+                if !on {
+                    Rectangle().frame(width: 1.8, height: 24).rotationEffect(.degrees(-45))
+                }
+            }
+            .foregroundStyle(on ? T.accent : T.muted)
+            .frame(width: 40, height: 40)
+            .background(on ? T.accent.opacity(0.14) : .clear, in: Circle())
+            .overlay(Circle().strokeBorder(on ? T.accent.opacity(0.5) : T.border, lineWidth: 1))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("\(label): \(on ? "encendido" : "apagado")")
+        .accessibilityLabel(label)
+        .accessibilityValue(on ? "Encendido" : "Apagado")
+        .accessibilityAddTraits(.isToggle)
+    }
+}
+
+func languageName(_ code: String) -> String { ["auto": "Auto", "es": "Español", "en": "English"][code] ?? code }
+func qualityName(_ code: String) -> String { ["max": "Máxima", "fast": "Rápida"][code] ?? code }
+
+/// "Auto · Rápida ⌄": idioma y calidad de la transcripción.
+struct SettingsPill: View {
+    @ObservedObject var model: AppModel
+    @State private var open = false
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 6) {
+                Text("\(languageName(model.language)) · \(qualityName(model.quality))")
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 13.5)).foregroundStyle(Color(hex: 0xCFCFCF))
+            .padding(.leading, 14).padding(.trailing, 12).frame(height: 40)
+            .overlay(Capsule().strokeBorder(T.border, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Idioma y calidad de la transcripción")
+        .popover(isPresented: $open, arrowEdge: .bottom) { TranscriptionSettings(model: model) }
+    }
+}
+
+/// Panel de idioma y calidad (cabecera e Inicio).
+struct TranscriptionSettings: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            group("Idioma", [("auto", "Auto"), ("es", "Español"), ("en", "English")], model.language, model.setLanguage)
+            group("Calidad", [("max", "Máxima"), ("fast", "Rápida")], model.quality, model.setQuality)
+            Text(model.isRecording ? "Se aplica desde la próxima grabación."
+                 : "Auto detecta el idioma cada pocos minutos. Rápida es ~2,5× más veloz y algo menos precisa.")
+                .font(.system(size: 11.5)).foregroundStyle(T.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 300)
+        .background(Color(hex: 0x1B1B1B))
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func group(_ label: String, _ options: [(String, String)], _ value: String,
+                       _ set: @escaping (String) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(.system(size: 12)).foregroundStyle(T.muted)
+            HStack(spacing: 0) {
+                ForEach(options, id: \.0) { code, title in
+                    let sel = code == value
+                    Button { set(code) } label: {
+                        Text(title).font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(sel ? T.ink : T.muted2)
+                            .frame(maxWidth: .infinity).frame(height: 30)
+                            .background(sel ? T.accent : .clear, in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+            .padding(3)
+            .background(Color(hex: 0x111111), in: Capsule())
+            .overlay(Capsule().strokeBorder(T.field, lineWidth: 1))
+        }
     }
 }
 
@@ -296,8 +480,7 @@ struct RecordButton: View {
             HStack(spacing: 10) {
                 if model.isRecording {
                     RoundedRectangle(cornerRadius: 2).fill(T.ink).frame(width: 10, height: 10)
-                    Text(label ?? "Detener")
-                    if label == nil { Text(hms(model.elapsed)).monospacedDigit().opacity(0.75) }
+                    if let label { Text(label) } else { Text(hms(model.elapsed)).monospacedDigit() }
                 } else {
                     Circle().fill(T.ink).frame(width: 10, height: 10)
                     Text("Grabar")
@@ -305,7 +488,7 @@ struct RecordButton: View {
             }
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(T.ink)
-            .padding(.horizontal, 20).frame(height: label == nil ? 38 : 44)
+            .padding(.horizontal, label == nil ? 20 : 22).frame(height: label == nil ? 40 : 44)
             .background(T.accent, in: Capsule())
             .contentShape(Capsule())
         }
@@ -325,7 +508,6 @@ struct Sidebar: View {
     @Binding var search: String
     let filter: HistoryFilter
     @State private var toDelete: SessionInfo?
-    @State private var showSetup = false
     @ObservedObject private var setup = SetupModel.shared
 
     private var filtered: [SessionInfo] {
@@ -356,7 +538,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if !setup.allGood && !setup.checking && (!setup.components.isEmpty || !setup.workerFound) {
-                Button { showSetup = true } label: {
+                Button { NotificationCenter.default.post(name: .openSetup, object: nil) } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(T.errFg)
                         VStack(alignment: .leading, spacing: 2) {
@@ -373,37 +555,12 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.plain)
             }
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Fuentes").font(.system(size: 12)).foregroundStyle(T.muted)
-                    Spacer()
-                    Button { showSetup = true } label: {
-                        Image(systemName: "gearshape").font(.system(size: 13)).foregroundStyle(T.muted)
-                            .frame(width: 24, height: 24).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Configuración: estado de Whisper y los modelos (⌘,)")
-                }
-                SourceSwitch(label: "Mi micrófono", on: model.micOn, set: model.setMic)
-                SourceSwitch(label: "Audio de la reunión", on: model.systemOn, set: model.setSystem)
-                SegmentedRow(label: "Idioma", options: [("auto", "Auto"), ("es", "Español"), ("en", "English")],
-                             value: model.language, disabled: model.isRecording, set: model.setLanguage,
-                             help: model.isRecording ? "El idioma se elige antes de grabar."
-                                : "Auto detecta el idioma cada pocos minutos: sirve si la reunión mezcla español e inglés.")
-                SegmentedRow(label: "Calidad", options: [("max", "Máxima"), ("fast", "Rápida")],
-                             value: model.quality, disabled: model.isRecording, set: model.setQuality,
-                             help: model.isRecording ? "La calidad se elige antes de grabar."
-                                : "Máxima: large-v3, el más preciso. Rápida: turbo, unas 2,5 veces más rápido y algo menos preciso.")
-                if !model.isRecording && model.micOn && !model.systemOn {
-                    Text("Sólo micrófono: para reuniones presenciales; se separan las voces de la sala.")
-                        .font(.system(size: 11.5)).foregroundStyle(T.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if !model.micOn && !model.systemOn {
-                    Text(model.isRecording ? "En pausa: no se graba nada." : "Activa al menos una fuente.")
-                        .font(.system(size: 11.5)).foregroundStyle(T.errText)
-                }
+            if !model.isRecording && !model.micOn && !model.systemOn {
+                Text("Activa el micrófono o el audio de la reunión (arriba a la derecha).")
+                    .font(.system(size: 11.5)).foregroundStyle(T.errText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
 
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
@@ -476,12 +633,9 @@ struct Sidebar: View {
             }
             .scrollIndicators(.never)
         }
-        .padding(.top, 18).padding(.horizontal, 12).padding(.bottom, 12)
+        .padding(.top, 14).padding(.horizontal, 10).padding(.bottom, 10)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(T.panel, in: RoundedRectangle(cornerRadius: 16))
-        .sheet(isPresented: $showSetup) { SetupView { showSetup = false } }
-        .onAppear { setup.check() }
-        .onReceive(NotificationCenter.default.publisher(for: .openSetup)) { _ in showSetup = true }
         .sheet(item: $toDelete) { s in
             DeleteConfirm(session: s) {
                 let list = filtered
@@ -785,7 +939,9 @@ func stats(_ s: SessionInfo) -> [(String, String)] {
 struct TranscriptView: View {
     @ObservedObject var model: AppModel
     let session: SessionInfo
-    @ObservedObject var player: AudioPlayer
+    /// Sin @ObservedObject: el reproductor cambia 10 veces por segundo y sólo
+    /// la tarjeta de audio y la lista (filas que cambian) deben redibujarse.
+    let player: AudioPlayer
     @State private var title = ""
     @FocusState private var titleFocused: Bool
 
@@ -793,10 +949,10 @@ struct TranscriptView: View {
         let lines = model.transcriptLines(session)
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     head
                     AudioCard(model: model, session: session, player: player, lines: lines)
-                    transcript(lines)
+                    TranscriptList(model: model, session: session, player: player, lines: lines)
                 }
                 .padding(.bottom, 8)
             }
@@ -816,103 +972,44 @@ struct TranscriptView: View {
     }
 
     private var head: some View {
-        VStack(spacing: 24) {
-            TextField("Nombre de la grabación", text: $title, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(T.display(title.count > 22 ? 44 : 72))
-                .tracking(title.count > 22 ? -0.9 : -1.4)
-                .multilineTextAlignment(.center)
-                .lineLimit(1...3)
-                .frame(maxWidth: 820)
-                .focused($titleFocused)
-                .onSubmit { titleFocused = false }
-                .help("Haz clic para cambiar el nombre")
-                .id("top")
-            StatRow(items: stats(session))
-            TagRow(model: model, session: session)
-        }
-        .padding(.top, 36).padding(.horizontal, 24).padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder private func transcript(_ lines: [TranscriptLine]) -> some View {
-        let current = currentLine(lines)
-        VStack(alignment: .leading, spacing: 22) {
-            if session.state == .processing {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Terminando de transcribir…").font(.system(size: 13)).foregroundStyle(T.muted2)
-                }
-            }
-            if lines.isEmpty {
-                Text("Sin texto.").font(.system(size: 16)).foregroundStyle(T.muted)
-            }
-            ForEach(lines) { line in
-                if line.time.isEmpty {
-                    Text(line.text).font(.system(size: 14)).foregroundStyle(T.muted)
-                } else {
-                    HStack(alignment: .top, spacing: 16) {
-                        Button { player.seek(seconds(line.time)) } label: {
-                            Text(line.time).font(.system(size: 12).monospacedDigit())
-                                .foregroundStyle(line.id == current ? T.ink : T.muted2)
-                                .padding(.horizontal, 10).frame(height: 26)
-                                .background(line.id == current ? T.accent : .clear, in: Capsule())
-                                .overlay(Capsule().strokeBorder(line.id == current ? .clear : T.border, lineWidth: 1))
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(session.playbackDuration == nil)
-                        .help(session.playbackDuration == nil ? "" : "Escuchar desde \(line.time)")
-                        .frame(width: 84, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 8) {
-                            SpeakerName(raw: line.speaker, session: session, model: model)
-                                .padding(.top, 4)
-                            transcriptText(line.text)
-                                .font(.system(size: 16))
-                                .lineSpacing(16 * 0.7 - 4)
-                                .foregroundStyle(T.text2)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .bottom, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                TextField("Nombre de la grabación", text: $title, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(T.display(44)).tracking(-0.9)
+                    .lineLimit(1...3)
+                    .focused($titleFocused)
+                    .onSubmit { titleFocused = false }
+                    .help("Haz clic para cambiar el nombre")
+                    .id("top")
+                FlowLayout(spacing: 8) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(stats(session).map(\.1).enumerated()), id: \.offset) { i, v in
+                            if i > 0 { Rectangle().fill(T.border).frame(width: 1, height: 14) }
+                            Text(v).font(.system(size: 14)).foregroundStyle(Color(hex: 0xCFCFCF))
+                                .padding(.leading, i == 0 ? 0 : 14).padding(.trailing, 14)
                         }
                     }
+                    TagChips(model: model, session: session)
                 }
             }
-        }
-        .frame(maxWidth: 760, alignment: .leading)
-        .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 28)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(T.panel, in: RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func currentLine(_ lines: [TranscriptLine]) -> Int? {
-        guard player.isPlaying || player.time > 0 else { return nil }
-        return lines.last { !$0.time.isEmpty && seconds($0.time) <= player.time + 0.2 }?.id
-    }
-}
-
-/// Tarjeta de audio: quién habla, Carpeta / Copiar, reproductor con forma de onda.
-struct AudioCard: View {
-    @ObservedObject var model: AppModel
-    let session: SessionInfo
-    @ObservedObject var player: AudioPlayer
-    let lines: [TranscriptLine]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Rectangle().fill(Color(hex: 0x4A4A4A)).frame(width: 1, height: 14)
-                    Text(nowLabel).font(.system(size: 12.5)).foregroundStyle(T.muted2).lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Button { model.openFolderOf(session) } label: {
+                    Image(systemName: "folder").font(.system(size: 14)).foregroundStyle(T.text2)
+                        .frame(width: 40, height: 40)
+                        .overlay(Circle().strokeBorder(T.border, lineWidth: 1))
+                        .contentShape(Circle())
                 }
-                Spacer()
-                PillButton(title: "Carpeta", icon: "folder") { model.openFolderOf(session) }
+                .buttonStyle(.plain)
+                .help("Mostrar en Finder")
                 Button { model.copy(session) } label: {
                     HStack(spacing: 8) {
                         Image(systemName: model.copiedID == session.id ? "checkmark" : "doc.on.doc").font(.system(size: 13))
                         Text(model.copiedID == session.id ? "Copiado" : "Copiar texto")
                     }
-                    .font(.system(size: 13.5, weight: .medium)).foregroundStyle(T.ink)
-                    .frame(minWidth: 128).padding(.horizontal, 14).frame(height: 34)
+                    .font(.system(size: 14, weight: .medium)).foregroundStyle(T.ink)
+                    .frame(minWidth: 136).padding(.horizontal, 16).frame(height: 40)
                     .background(T.text, in: Capsule())
                     .contentShape(Capsule())
                 }
@@ -921,48 +1018,196 @@ struct AudioCard: View {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .help("Copiar la transcripción (⇧⌘C)")
             }
-            if session.playbackDuration != nil {
-                HStack(spacing: 12) {
+        }
+        .padding(.top, 20).padding(.horizontal, 8).padding(.bottom, 8)
+    }
+
+}
+
+/// Lista de la transcripción. Observa el reproductor sólo para resaltar la línea
+/// que suena; cada fila es Equatable y no se redibuja si no cambia.
+struct TranscriptList: View {
+    @ObservedObject var model: AppModel
+    let session: SessionInfo
+    @ObservedObject var player: AudioPlayer
+    let lines: [TranscriptLine]
+
+    var body: some View {
+        let current = currentLine()
+        VStack(alignment: .leading, spacing: 2) {
+            if session.state == .processing {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Terminando de transcribir…").font(.system(size: 13)).foregroundStyle(T.muted2)
+                }
+                .padding(12)
+            }
+            if lines.isEmpty {
+                Text("Sin texto.").font(.system(size: 16)).foregroundStyle(T.muted).padding(12)
+            }
+            TranscriptRows(lines: lines, current: current, session: session, model: model, player: player)
+                .equatable()
+        }
+        .frame(maxWidth: 820, alignment: .leading)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(T.panel, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func currentLine() -> Int? {
+        guard player.isPlaying || player.time > 0 else { return nil }
+        return lineIndex(at: player.time + 0.2, in: lines).map { lines[$0].id }
+    }
+}
+
+/// Las filas sólo se recalculan si cambia la línea que suena (no en cada tic del reproductor).
+struct TranscriptRows: View, Equatable {
+    let lines: [TranscriptLine]
+    let current: Int?
+    let session: SessionInfo
+    let model: AppModel
+    let player: AudioPlayer
+
+    static func == (a: TranscriptRows, b: TranscriptRows) -> Bool {
+        a.current == b.current && a.session == b.session && a.lines.count == b.lines.count
+            && a.lines.last?.text == b.lines.last?.text
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(lines) { line in
+                TranscriptRow(line: line, active: line.id == current, name: session.displayName(line.speaker),
+                              canSeek: session.playbackDuration != nil, session: session, model: model,
+                              seek: { player.seek(line.start) })
+                    .equatable()
+            }
+        }
+    }
+}
+
+struct TranscriptRow: View, Equatable {
+    let line: TranscriptLine
+    let active: Bool
+    let name: String
+    let canSeek: Bool
+    let session: SessionInfo
+    let model: AppModel
+    let seek: () -> Void
+
+    static func == (a: TranscriptRow, b: TranscriptRow) -> Bool {
+        a.line.id == b.line.id && a.line.text == b.line.text && a.line.speaker == b.line.speaker
+            && a.active == b.active && a.name == b.name && a.canSeek == b.canSeek && a.session.id == b.session.id
+    }
+
+    var body: some View {
+        if line.time.isEmpty {
+            Text(line.text).font(.system(size: 14)).foregroundStyle(T.muted).padding(12)
+        } else {
+            let me = line.speaker == "Yo"
+            HStack(alignment: .top, spacing: 12) {
+                Button(action: seek) {
+                    Text(line.time).font(.system(size: 12.5).monospacedDigit())
+                        .foregroundStyle(active ? T.text : T.muted)
+                        .frame(width: 64, height: 24, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+                .disabled(!canSeek)
+                .help(canSeek ? "Escuchar desde \(line.time)" : "")
+                Text(initials(name))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(me ? T.ink : Color(hex: 0xCFCFCF))
+                    .frame(width: 28, height: 28)
+                    .background(me ? T.accent : T.field, in: Circle())
+                VStack(alignment: .leading, spacing: 4) {
+                    SpeakerName(raw: line.speaker, session: session, model: model)
+                        .padding(.top, 4)
+                    transcriptText(line.text)
+                        .font(.system(size: 16))
+                        .lineSpacing(16 * 0.65 - 3)
+                        .foregroundStyle(Color(hex: 0xECECEC))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 10)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(12)
+            .background(active ? Color(hex: 0x202020) : .clear, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
+/// Tarjeta de audio: reproductor con la forma de onda coloreada según quién habla.
+struct AudioCard: View {
+    @ObservedObject var model: AppModel
+    let session: SessionInfo
+    @ObservedObject var player: AudioPlayer
+    let lines: [TranscriptLine]
+
+    /// Tramos (inicio en segundos, ¿soy yo?) para colorear la onda.
+    private var turns: [(Double, Bool)] {
+        lines.compactMap { $0.start < 0 ? nil : ($0.start, $0.speaker == "Yo") }
+    }
+
+    var body: some View {
+        if session.playbackDuration != nil {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 14) {
                     Button(action: player.toggle) {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 13)).foregroundStyle(T.ink)
-                            .frame(width: 34, height: 34)
+                            .font(.system(size: 15)).foregroundStyle(T.ink)
+                            .frame(width: 44, height: 44)
                             .background(T.accent, in: Circle())
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .help(player.isPlaying ? "Pausa" : "Reproducir")
-                    Text(clock(player.time)).frame(minWidth: 38, alignment: .trailing)
-                    Waveform(peaks: session.peaks, progress: player.duration > 0 ? player.time / player.duration : 0) {
+                    Text(clock(player.time)).font(.system(size: 12.5).monospacedDigit())
+                        .foregroundStyle(Color(hex: 0xCFCFCF)).frame(width: 48, alignment: .leading)
+                    Waveform(peaks: session.peaks, progress: player.duration > 0 ? player.time / player.duration : 0,
+                             turns: turns, duration: player.duration) {
                         player.seek($0 * player.duration)
                     }
-                    .frame(height: 36)
-                    Text(clock(player.duration)).frame(minWidth: 38, alignment: .leading)
+                    .frame(height: 56)
+                    Text(clock(player.duration)).font(.system(size: 12.5).monospacedDigit())
+                        .foregroundStyle(T.muted).frame(width: 48, alignment: .trailing)
                 }
-                .font(.system(size: 12).monospacedDigit()).foregroundStyle(T.muted)
+                let hasMe = turns.contains { $0.1 }, hasOthers = turns.contains { !$0.1 }
+                if hasMe && hasOthers {
+                    HStack(spacing: 16) {
+                        legend("Participantes", Color(hex: 0x9A9A9A))
+                        legend(session.displayName("Yo"), T.accent)
+                    }
+                    .padding(.leading, 58)
+                }
             }
+            .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 12)
+            .background(T.panel, in: RoundedRectangle(cornerRadius: 16))
         }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(T.panel, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private var nowLabel: String {
-        let speakers = model.speakers(session).map { session.displayName($0) }
-        guard player.isPlaying || player.time > 0 else {
-            return speakers.isEmpty ? session.origin : speakers.joined(separator: " · ")
+    private func legend(_ label: String, _ c: Color) -> some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 8, height: 8)
+            Text(label).font(.system(size: 12)).foregroundStyle(T.muted2)
         }
-        let line = lines.last { !$0.time.isEmpty && seconds($0.time) <= player.time + 0.2 }
-        return "\(line.map { session.displayName($0.speaker) } ?? session.origin) · \(hms(player.time))"
     }
 }
 
 struct Waveform: View {
     let peaks: [Float]
     let progress: Double
+    var turns: [(Double, Bool)] = []
+    var duration: Double = 0
     let seek: (Double) -> Void
 
+    static let count = 140
+
+    /// Altura de cada barra (0…1). Depende sólo de los picos.
     private var bars: [Double] {
-        let n = 120
+        let n = Self.count
         guard !peaks.isEmpty else { return Array(repeating: 0.05, count: n) }
         return (0..<n).map { i in
             let a = i * peaks.count / n, b = max(a + 1, (i + 1) * peaks.count / n)
@@ -970,29 +1215,57 @@ struct Waveform: View {
         }
     }
 
-    var body: some View {
-        GeometryReader { g in
-            let b = bars
-            ZStack(alignment: .leading) {
-                HStack(alignment: .center, spacing: 2) {
-                    ForEach(b.indices, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Double(i) / Double(b.count) < progress ? Color(hex: 0xBDBDBD) : T.wave)
-                            .frame(height: max(3, b[i] * g.size.height))
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .frame(maxHeight: .infinity)
-                Rectangle().fill(T.accent).frame(width: 2)
-                    .offset(x: max(0, min(g.size.width - 2, g.size.width * progress)))
-            }
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onEnded { v in
-                seek(max(0, min(1, v.location.x / g.size.width)))
-            })
+    /// ¿Cada barra es mía? Un solo recorrido por los turnos (están en orden).
+    private var mine: [Bool] {
+        let n = Self.count
+        guard duration > 0, !turns.isEmpty else { return Array(repeating: false, count: n) }
+        var out = [Bool](repeating: false, count: n)
+        var k = -1
+        for i in 0..<n {
+            let t = Double(i) / Double(n) * duration
+            while k + 1 < turns.count && turns[k + 1].0 <= t { k += 1 }
+            out[i] = k >= 0 && turns[k].1
         }
+        return out
+    }
+
+    var body: some View {
+        let b = bars, me = mine
+        // Canvas: un solo dibujo en vez de 140 vistas (se repinta 10 veces por segundo al reproducir).
+        Canvas { ctx, size in
+            let n = b.count
+            let gap: CGFloat = 2
+            let w = max(1, (size.width - gap * CGFloat(n - 1)) / CGFloat(n))
+            for i in 0..<n {
+                let played = Double(i) / Double(n) < progress
+                let c: Color = me[i] ? (played ? T.accent : T.accent.opacity(0.45))
+                                     : (played ? T.text2 : Color(hex: 0x5A5A5A))
+                let h = max(4, CGFloat(b[i]) * size.height)
+                let r = CGRect(x: CGFloat(i) * (w + gap), y: (size.height - h) / 2, width: w, height: h)
+                ctx.fill(Path(roundedRect: r, cornerRadius: min(2, w / 2)), with: .color(c))
+            }
+            let x = max(0, min(size.width - 2, size.width * progress))
+            ctx.fill(Path(CGRect(x: x, y: 0, width: 2, height: size.height)), with: .color(T.text))
+        }
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 0).onEnded { v in
+            // el ancho real lo da el GeometryReader de fondo
+            seek(max(0, min(1, v.location.x / max(width, 1))))
+        })
+        .background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }
+            .onChange(of: g.size.width) { _, w in width = w } })
         .help("Clic para ir a ese momento")
     }
+
+    @State private var width: CGFloat = 1
+}
+
+/// Iniciales para el avatar: "Yo", "P" (Participantes), "LM" (Laura Martín)…
+func initials(_ name: String) -> String {
+    if name == "Yo" { return "Yo" }
+    if name.hasPrefix("Persona "), let n = Int(name.dropFirst(8)) { return "P\(n)" }
+    let parts = name.split(separator: " ").prefix(2)
+    return parts.map { String($0.prefix(1)).uppercased() }.joined()
 }
 
 /// Texto de un turno; "(a la vez)" (dos personas hablando a la vez) se muestra como etiqueta.
@@ -1011,9 +1284,69 @@ struct TranscriptLine: Identifiable {
     let time: String
     let speaker: String
     let text: String
+    /// Segundos de `time`, calculados una vez al leer (se usan 10 veces por segundo al reproducir).
+    let start: Double
+
+    init(id: Int, time: String, speaker: String, text: String) {
+        self.id = id; self.time = time; self.speaker = speaker; self.text = text
+        self.start = time.isEmpty ? -1 : seconds(time)
+    }
+}
+
+/// Índice de la última línea con hora que empieza antes de `t` (búsqueda binaria; las líneas van en orden).
+func lineIndex(at t: Double, in lines: [TranscriptLine]) -> Int? {
+    var lo = 0, hi = lines.count - 1, found: Int?
+    while lo <= hi {
+        let mid = (lo + hi) / 2
+        if lines[mid].start <= t { found = mid; lo = mid + 1 } else { hi = mid - 1 }
+    }
+    guard var i = found else { return nil }
+    while i >= 0 && lines[i].start < 0 { i -= 1 }   // saltar cabeceras sin hora
+    return i >= 0 ? i : nil
 }
 
 // MARK: - etiquetas
+
+/// Etiquetas en línea junto a los datos de la grabación (diseño "Transcripción").
+struct TagChips: View {
+    @ObservedObject var model: AppModel
+    let session: SessionInfo
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(session.labels, id: \.self) { label in
+                HStack(spacing: 4) {
+                    Text(label.uppercased()).font(.system(size: 11.5, weight: .medium)).tracking(0.46)
+                    Button { model.removeLabel(label, from: session) } label: {
+                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(T.muted).frame(width: 20, height: 20).contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Quitar etiqueta \(label)")
+                }
+                .padding(.leading, 10).padding(.trailing, 2).frame(height: 26)
+                .overlay(Capsule().strokeBorder(T.border, lineWidth: 1))
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold)).foregroundStyle(T.muted)
+                TextField("Etiqueta", text: $draft)
+                    .textFieldStyle(.plain).font(.system(size: 12))
+                    .frame(width: 72)
+                    .focused($focused)
+                    .onSubmit {
+                        for part in draft.split(separator: ",") { model.addLabel(String(part), to: session) }
+                        draft = ""
+                        focused = true
+                    }
+            }
+            .padding(.horizontal, 10).frame(height: 26)
+            .overlay(Capsule().strokeBorder(Color(hex: 0x3A3A3A), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+            .help(model.allLabels.isEmpty ? "Añadir etiqueta" : "Añadir etiqueta · usadas: \(model.allLabels.prefix(6).joined(separator: ", "))")
+        }
+    }
+}
 
 struct TagRow: View {
     @ObservedObject var model: AppModel
@@ -1100,6 +1433,12 @@ struct FlowLayout: Layout {
         return CGSize(width: width, height: h)
     }
 
+    // Sin alineaciones propias: evita recorrer los hijos en cada pasada de diseño.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var y = bounds.minY
         for row in rows(bounds.width, subviews) {
@@ -1128,11 +1467,9 @@ struct SpeakerName: View {
             draft = session.speakerNames[raw] ?? ""
             editing = true
         } label: {
-            HStack(spacing: 6) {
-                Circle().fill(speakerColor(raw)).frame(width: 6, height: 6)
-                Text(session.displayName(raw)).font(.system(size: 12)).foregroundStyle(T.muted)
-            }
-            .contentShape(Rectangle())
+            Text(session.displayName(raw)).font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(raw == "Yo" ? T.accent : T.muted2)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Clic para ponerle nombre a \(raw)")
@@ -1198,7 +1535,9 @@ struct RecordingView: View {
                         .tracking(-3)
                         .minimumScaleFactor(0.5).lineLimit(1)
                     StatRow(items: [("Micrófono", model.micOn ? "ON" : "OFF"),
-                                    ("Audio de la reunión", model.systemOn ? "ON" : "OFF")])
+                                    ("Reunión", model.systemOn ? "ON" : "OFF"),
+                                    ("Idioma", languageName(model.language)),
+                                    ("Calidad", qualityName(model.quality))])
                 }
                 .padding(.top, 48).padding(.horizontal, 24).padding(.bottom, 16)
 
@@ -1215,7 +1554,9 @@ struct RecordingView: View {
                     .frame(height: 140)
                     .animation(.linear(duration: 0.2), value: model.levelHistory)
                     HStack(spacing: 12) {
-                        Text("Se transcribe por bloques mientras grabas; al detener, el texto queda listo en ~1 min.")
+                        Text(model.liveLines.isEmpty && !model.liveAvailable
+                             ? "Se transcribe por bloques de ~2 min mientras grabas; al detener, el texto queda listo en segundos."
+                             : "Ves el texto al instante; cada ~2 min se reemplaza por la transcripción precisa.")
                             .font(.system(size: 13.5)).foregroundStyle(T.muted2)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
@@ -1225,7 +1566,7 @@ struct RecordingView: View {
                 .padding(.horizontal, 20).padding(.vertical, 24)
                 .background(T.panel, in: RoundedRectangle(cornerRadius: 16))
 
-                if let session, session.hasTranscript {
+                if (session?.hasTranscript ?? false) || !model.liveLines.isEmpty {
                     LiveText(model: model, session: session)
                 }
             }
@@ -1233,28 +1574,55 @@ struct RecordingView: View {
     }
 }
 
-/// Lo transcrito hasta ahora (bloques ya procesados) durante la grabación.
+/// Durante la grabación: el texto de Whisper de los bloques ya procesados y,
+/// debajo, el texto en vivo (Apple, en el Mac) de lo que Whisper aún no cubre.
 struct LiveText: View {
     @ObservedObject var model: AppModel
-    let session: SessionInfo
+    let session: SessionInfo?
 
     var body: some View {
+        let whisper = session.map { s in s.hasTranscript ? model.transcriptLines(s) : [] } ?? []
+        let live = model.pendingLive(session)
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("Lo que va").font(.system(size: 12)).foregroundStyle(T.muted)
                 Spacer()
-                PillButton(title: model.copiedID == session.id ? "Copiado" : "Copiar lo que va", icon: "doc.on.doc") {
-                    model.copy(session)
+                if let session, session.hasTranscript {
+                    PillButton(title: model.copiedID == session.id ? "Copiado" : "Copiar lo que va", icon: "doc.on.doc") {
+                        model.copy(session)
+                    }
                 }
             }
-            ForEach(model.transcriptLines(session).suffix(30)) { line in
+            ForEach(whisper.suffix(30)) { line in
                 HStack(alignment: .top, spacing: 16) {
                     Text(line.time).font(.system(size: 12).monospacedDigit()).foregroundStyle(T.muted)
                         .frame(width: 70, alignment: .leading)
                     VStack(alignment: .leading, spacing: 6) {
-                        SpeakerName(raw: line.speaker, session: session, model: model)
+                        if let session {
+                            SpeakerName(raw: line.speaker, session: session, model: model)
+                        }
                         transcriptText(line.text).font(.system(size: 15)).foregroundStyle(T.text2)
                             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if !live.isEmpty {
+                HStack(spacing: 6) {
+                    Circle().fill(T.rec).frame(width: 6, height: 6)
+                    Text("En vivo · provisional, se reemplaza por el texto preciso cada ~2 min")
+                        .font(.system(size: 11.5)).foregroundStyle(T.muted)
+                }
+                .padding(.top, whisper.isEmpty ? 0 : 6)
+                ForEach(live.suffix(30)) { line in
+                    HStack(alignment: .top, spacing: 16) {
+                        Text(hms(line.start)).font(.system(size: 12).monospacedDigit()).foregroundStyle(T.muted)
+                            .frame(width: 70, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(line.speaker).font(.system(size: 12.5)).foregroundStyle(T.muted)
+                            Text(line.text).font(.system(size: 15))
+                                .foregroundStyle(line.final ? T.text2.opacity(0.8) : T.muted)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }

@@ -7,11 +7,12 @@ import UniformTypeIdentifiers
 /// cada pista y se transcribe en segundo plano mientras sigue la reunión.
 /// Al detener sólo falta transcribir el último bloque (~1 min, dure lo que dure).
 enum ChunkPolicy {
-    /// Duración objetivo de un bloque (5 min). Para pruebas:
+    /// Duración objetivo de un bloque (2 min: el texto de Whisper llega cada ~2 min;
+    /// mientras tanto se ve el texto en vivo). Para pruebas:
     /// `defaults write com.jt.recorderjt chunkSeconds 30`
     static var target: TimeInterval {
         let v = UserDefaults.standard.double(forKey: "chunkSeconds")
-        return v >= 10 ? v : 300
+        return v >= 10 ? v : 120
     }
     static let maxExtra: TimeInterval = 45       // espera máxima extra buscando un silencio
     static let quietLevel: Float = 0.02          // nivel considerado silencio
@@ -54,6 +55,14 @@ final class AppModel: ObservableObject {
         AppLog.write("idioma: \(code)\(isRecording ? " (se aplica desde la próxima grabación)" : "")")
     }
 
+    /// Texto en vivo (reconocimiento de Apple en el Mac) de la grabación en curso.
+    @Published private(set) var liveLines: [LiveLine] = []
+    /// Segundo (desde el inicio) en que se cerró cada bloque: lo anterior ya lo cubre Whisper.
+    private var chunkEnds: [TimeInterval] = []
+    private var liveSources: [String: LiveSource] = [:]
+    /// Hay reconocimiento en vivo funcionando en esta grabación.
+    var liveAvailable: Bool { !liveSources.isEmpty }
+
     private var sessionDir: URL?
     private var startDate: Date?
     private var mic: MicCapture?
@@ -77,6 +86,18 @@ final class AppModel: ObservableObject {
     init() {
         AppLog.write("app iniciada · micrófono: \(MicCapture.statusName)")
         recoverInterrupted()
+        // Prueba automática (sólo con datos de demostración en RJT_HOME):
+        // RJT_TEST_RECORD=<segundos> graba, guarda RJT_SNAPSHOT al final y se detiene.
+        let env = ProcessInfo.processInfo.environment
+        if env["RJT_HOME"] != nil, let secs = env["RJT_TEST_RECORD"].flatMap(Double.init) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1.5))
+                await self?.start()
+                try? await Task.sleep(for: .seconds(secs))
+                if let out = env["RJT_SNAPSHOT"] { AppDelegate.snapshot(to: out) }
+                self?.stop()
+            }
+        }
         refresh()
         // Si la app se cierra grabando (Salir, apagar el Mac…), cerrar bien los archivos.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -137,6 +158,73 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
     }
 
+    // MARK: - texto en vivo
+
+    private func startLive(enabled: Bool, mic: TrackWriter, system: TrackWriter) {
+        liveLines = []
+        chunkEnds = []
+        liveSources = [:]
+        guard enabled else {
+            AppLog.write("texto en vivo: sin permiso de reconocimiento de voz")
+            return
+        }
+        let t0 = Date()
+        let locales = LiveSpeech.candidates(for: language)
+        let emit: (LiveLine) -> Void = { [weak self] line in
+            DispatchQueue.main.async { self?.upsertLive(line) }
+        }
+        let pairs: [(String, TrackWriter)] = [(micTrack == "mic" ? "Yo" : "Participantes", mic), ("Participantes", system)]
+        for (i, (speaker, writer)) in pairs.enumerated() {
+            guard let src = LiveSource(speaker: speaker, locales: locales,
+                                       clock: { Date().timeIntervalSince(t0) }, emit: emit) else {
+                AppLog.write("texto en vivo: ningún reconocedor sin conexión para «\(language)»; sólo se usa Whisper")
+                return
+            }
+            liveSources[i == 0 ? "mic" : "system"] = src
+            writer.onBuffer = { [weak src] in src?.append($0) }
+        }
+        AppLog.write("texto en vivo: \(liveSources.values.first?.localeID ?? "?") en el Mac")
+    }
+
+    private func upsertLive(_ line: LiveLine) {
+        if let i = liveLines.lastIndex(where: { $0.id == line.id }) {
+            liveLines[i] = line
+        } else {
+            liveLines.append(line)
+            liveLines.sort { $0.start < $1.start }
+            if liveLines.count > 400 { liveLines.removeFirst(liveLines.count - 400) }
+        }
+    }
+
+    /// Hasta qué segundo de la grabación ya hay texto de Whisper (bloques transcritos).
+    private var coveredCache: (String, Date, Int)?
+
+    func whisperCovered(_ s: SessionInfo) -> TimeInterval {
+        // Se pide 4 veces por segundo al grabar: sólo se relee si el worker reescribió el archivo.
+        let url = s.dir.appendingPathComponent("transcript.json")
+        guard let mtime = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        else { return 0 }
+        let idx: Int
+        if let c = coveredCache, c.0 == s.id, c.1 == mtime { idx = c.2 } else {
+            idx = readCoveredIndex(url)
+            coveredCache = (s.id, mtime, idx)
+        }
+        return idx >= 0 && idx < chunkEnds.count ? chunkEnds[idx] : 0
+    }
+
+    private func readCoveredIndex(_ url: URL) -> Int {
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tracks = obj["tracks"] as? [String] else { return -1 }
+        return tracks.compactMap { Int($0.split(separator: ".").last ?? "") }.max() ?? -1
+    }
+
+    /// Líneas en vivo que Whisper aún no ha cubierto.
+    func pendingLive(_ s: SessionInfo?) -> [LiveLine] {
+        let covered = s.map(whisperCovered) ?? 0
+        return liveLines.filter { $0.start >= covered - 1 }
+    }
+
     // MARK: - grabación
 
     private func chunkURL(_ dir: URL, _ track: String, _ i: Int) -> URL {
@@ -155,6 +243,7 @@ final class AppModel: ObservableObject {
             AppLog.write("grabación cancelada: sin permiso de micrófono")
             return
         }
+        let liveOK = await LiveSpeech.authorize()
         let app = SessionStore.detectMeetingApp()
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
         let title = "\(app ?? "Grabación") \(timeFmt.string(from: Date()))"
@@ -173,6 +262,7 @@ final class AppModel: ObservableObject {
             micTrack = wantSystem ? "mic" : "mixed"
             let mw = TrackWriter(url: chunkURL(dir, micTrack, 0))
             let sw = TrackWriter(url: chunkURL(dir, "system", 0))
+            startLive(enabled: liveOK, mic: mw, system: sw)
             var errors: [String] = []
             if wantSystem {
                 let sys = SystemAudioTap(writer: sw)
@@ -235,6 +325,7 @@ final class AppModel: ObservableObject {
         register(finished, index: chunkIndex, in: dir)
         AppLog.write("bloque \(chunkIndex) cerrado (\(reason)) a los \(Int(elapsed))s")
         chunkIndex = next
+        chunkEnds.append(elapsed)
         chunkStart = Date()
         quietSince = nil
         enqueue(["chunks", dir.lastPathComponent])
@@ -307,6 +398,8 @@ final class AppModel: ObservableObject {
     func stop() {
         tick?.invalidate(); tick = nil
         mic?.stop(); system?.stop()
+        liveSources.values.forEach { $0.stop() }
+        liveSources = [:]
         isRecording = false; micLevel = 0; systemLevel = 0
 
         if let dir = sessionDir {
@@ -432,7 +525,10 @@ final class AppModel: ObservableObject {
 
     // MARK: - lista / copiar
 
-    func refresh() { sessions = SessionStore.list() }
+    func refresh() {
+        let fresh = SessionStore.list()
+        if fresh != sessions { sessions = fresh }  // sin cambios no se redibuja nada
+    }
 
     private func refreshIfNeeded() {
         if isRecording || workerRunning || sessions.contains(where: { $0.state == .processing }) { refresh() }
@@ -447,7 +543,26 @@ final class AppModel: ObservableObject {
     }
 
     /// Texto de la transcripción sin la cabecera (que lleva el título original).
-    func transcriptBody(_ s: SessionInfo) -> String {
+    /// Transcripciones ya leídas: se vuelven a leer sólo si el archivo cambia
+    /// (las vistas las piden en cada redibujado, p. ej. 10 veces por segundo al reproducir).
+    private var textCache: [String: (Date, String, [TranscriptLine])] = [:]
+
+    private func cached(_ s: SessionInfo) -> (String, [TranscriptLine]) {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: s.transcript.path))?[.modificationDate] as? Date
+        guard let mtime else { return ("", []) }
+        if let c = textCache[s.id], c.0 == mtime { return (c.1, c.2) }
+        let body = readBody(s)
+        let lines = parseLines(body)
+        textCache[s.id] = (mtime, body, lines)
+        return (body, lines)
+    }
+
+    /// Texto de la transcripción sin la cabecera (que lleva el título original).
+    func transcriptBody(_ s: SessionInfo) -> String { cached(s).0 }
+
+    func transcriptLines(_ s: SessionInfo) -> [TranscriptLine] { cached(s).1 }
+
+    private func readBody(_ s: SessionInfo) -> String {
         guard let text = try? String(contentsOf: s.transcript, encoding: .utf8) else { return "" }
         var lines = text.components(separatedBy: "\n")
         if lines.first?.hasPrefix("Transcripción — ") == true {
@@ -457,9 +572,9 @@ final class AppModel: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    func transcriptLines(_ s: SessionInfo) -> [TranscriptLine] {
+    private func parseLines(_ body: String) -> [TranscriptLine] {
         // "[00:12:31] Participantes: texto"
-        transcriptBody(s).components(separatedBy: "\n").enumerated().compactMap { i, raw in
+        body.components(separatedBy: "\n").enumerated().compactMap { i, raw in
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("["), let close = line.firstIndex(of: "]") else {
                 return line.isEmpty ? nil : TranscriptLine(id: i, time: "", speaker: "", text: line)

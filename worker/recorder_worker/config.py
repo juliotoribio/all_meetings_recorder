@@ -200,4 +200,11 @@ def load_config(path: Path | None = None) -> Config:
             cfg.paths.__post_init__()
         _apply(cfg.worker, data.get("worker", {}))
         cfg.source = path
+    # La app con RJT_HOME (datos de demostración) pasa esa carpeta al worker.
+    home = os.environ.get("RJT_HOME")
+    if home:
+        cfg.paths.home = Path(home).expanduser()
+        for k in ("sessions", "inbox", "db", "logs"):
+            setattr(cfg.paths, k, None)
+        cfg.paths.__post_init__()
     return cfg

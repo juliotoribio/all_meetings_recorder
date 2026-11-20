@@ -22,6 +22,9 @@ final class TrackWriter {
     private(set) var level: Float = 0
     private(set) var lastError: String?
 
+    /// Recibe cada buffer capturado (texto en vivo). Se llama fuera del candado.
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     init(url: URL) { self.url = url }
 
     /// Segundos (reloj de la máquina) del primer buffer: sirve para alinear pistas.
@@ -31,6 +34,7 @@ final class TrackWriter {
 
     func write(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
         guard buffer.frameLength > 0 else { return }
+        onBuffer?(buffer)
         lock.lock(); defer { lock.unlock() }
         do {
             if file == nil {

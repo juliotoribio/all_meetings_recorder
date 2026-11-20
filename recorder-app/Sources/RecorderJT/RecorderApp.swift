@@ -6,7 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { Self.showMainWindow() }
         // Diagnóstico del diseño: `RJT_SNAPSHOT=/ruta.png` guarda una imagen de la ventana.
-        if let out = ProcessInfo.processInfo.environment["RJT_SNAPSHOT"] {
+        if let out = ProcessInfo.processInfo.environment["RJT_SNAPSHOT"],
+           ProcessInfo.processInfo.environment["RJT_TEST_RECORD"] == nil {
             let sheet = ProcessInfo.processInfo.environment["RJT_SNAPSHOT_SETUP"] != nil
             if sheet {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -19,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Centra los botones de la ventana (cerrar/minimizar/zoom) en la cabecera de 52 pt
     /// del diseño. macOS los recoloca al cambiar de tamaño, así que se repite.
-    static let headerHeight: CGFloat = 52
+    static let headerHeight: CGFloat = 64
     private static var observing = false
 
     static func placeTrafficLights(_ w: NSWindow) {

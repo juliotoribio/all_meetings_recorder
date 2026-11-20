@@ -15,6 +15,8 @@
   <string>All Meetings Recorder graba tu micrófono para transcribir tus reuniones. El audio no sale de tu Mac.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>All Meetings Recorder graba el audio de tus reuniones (Teams, Zoom, Meet) para transcribirlas. El audio no sale de tu Mac.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Para mostrar el texto mientras grabas. Todo se queda en tu Mac.</string>
   <key>RJTWorkerCLI</key><string>__WORKER_CLI__</string>
 </dict>
 </plist>

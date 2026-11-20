@@ -78,7 +78,19 @@ enum SessionStore {
         try? writeManifest(m, to: dir)
     }
 
-    static func list(limit: Int = 1000) -> [SessionInfo] {
+    /// playback.json ya leídos (la forma de onda no cambia salvo que se regenere).
+    @MainActor private static var playbackCache: [String: (Date, Double?, [Float])] = [:]
+
+    @MainActor private static func playback(_ url: URL, _ mtime: Date) -> (Double?, [Float])? {
+        if let c = playbackCache[url.path], c.0 == mtime { return (c.1, c.2) }
+        guard let data = try? Data(contentsOf: url),
+              let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        let v = ((j["duration_s"] as? NSNumber)?.doubleValue, ((j["peaks"] as? [NSNumber]) ?? []).map { $0.floatValue })
+        playbackCache[url.path] = (mtime, v.0, v.1)
+        return v
+    }
+
+    @MainActor static func list(limit: Int = 1000) -> [SessionInfo] {
         let fm = FileManager.default
         guard let dirs = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return [] }
         let iso = ISO8601DateFormatter()
@@ -116,12 +128,12 @@ enum SessionStore {
                     info.origin = "Micrófono"
                 }
                 let pj = dir.appendingPathComponent("playback.json")
-                if let data = try? Data(contentsOf: pj),
-                   let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                   fm.fileExists(atPath: info.playbackURL.path) {
-                    info.playbackDuration = (j["duration_s"] as? NSNumber)?.doubleValue
-                    info.peaks = ((j["peaks"] as? [NSNumber]) ?? []).map { $0.floatValue }
-                    info.playbackVersion = (try? fm.attributesOfItem(atPath: pj.path))?[.modificationDate] as? Date
+                if let mtime = (try? fm.attributesOfItem(atPath: pj.path))?[.modificationDate] as? Date,
+                   fm.fileExists(atPath: info.playbackURL.path),
+                   let p = playback(pj, mtime) {
+                    info.playbackDuration = p.0
+                    info.peaks = p.1
+                    info.playbackVersion = mtime
                 }
                 return info
             }
