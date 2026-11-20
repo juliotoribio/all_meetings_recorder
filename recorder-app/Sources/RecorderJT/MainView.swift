@@ -386,7 +386,14 @@ struct Sidebar: View {
                 }
                 SourceSwitch(label: "Mi micrófono", on: model.micOn, set: model.setMic)
                 SourceSwitch(label: "Audio de la reunión", on: model.systemOn, set: model.setSystem)
-                LanguagePicker(value: model.language, disabled: model.isRecording, set: model.setLanguage)
+                SegmentedRow(label: "Idioma", options: [("auto", "Auto"), ("es", "Español"), ("en", "English")],
+                             value: model.language, disabled: model.isRecording, set: model.setLanguage,
+                             help: model.isRecording ? "El idioma se elige antes de grabar."
+                                : "Auto detecta el idioma cada pocos minutos: sirve si la reunión mezcla español e inglés.")
+                SegmentedRow(label: "Calidad", options: [("max", "Máxima"), ("fast", "Rápida")],
+                             value: model.quality, disabled: model.isRecording, set: model.setQuality,
+                             help: model.isRecording ? "La calidad se elige antes de grabar."
+                                : "Máxima: large-v3, el más preciso. Rápida: turbo, unas 2,5 veces más rápido y algo menos preciso.")
                 if !model.isRecording && model.micOn && !model.systemOn {
                     Text("Sólo micrófono: para reuniones presenciales; se separan las voces de la sala.")
                         .font(.system(size: 11.5)).foregroundStyle(T.muted)
@@ -576,21 +583,23 @@ struct SourceSwitch: View {
     }
 }
 
-struct LanguagePicker: View {
+struct SegmentedRow: View {
+    let label: String
+    let options: [(String, String)]
     let value: String
     let disabled: Bool
     let set: (String) -> Void
-    private let options = [("auto", "Auto"), ("es", "Español"), ("en", "English")]
+    let help: String
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("Idioma").font(.system(size: 14)).foregroundStyle(T.text2)
+            Text(label).font(.system(size: 14)).foregroundStyle(T.text2)
             Spacer()
             HStack(spacing: 2) {
-                ForEach(options, id: \.0) { code, label in
+                ForEach(options, id: \.0) { code, title in
                     let sel = code == value
                     Button { set(code) } label: {
-                        Text(label).font(.system(size: 12, weight: sel ? .semibold : .regular))
+                        Text(title).font(.system(size: 12, weight: sel ? .semibold : .regular))
                             .foregroundStyle(sel ? T.ink : T.muted)
                             .padding(.horizontal, 7).frame(height: 24)
                             .background(Capsule().fill(sel ? T.accent : .clear))
@@ -606,8 +615,9 @@ struct LanguagePicker: View {
         }
         .disabled(disabled)
         .opacity(disabled ? 0.5 : 1)
-        .help(disabled ? "El idioma se elige antes de grabar."
-              : "Auto detecta el idioma cada pocos minutos: sirve si la reunión mezcla español e inglés.")
+        .help(help)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
     }
 }
 

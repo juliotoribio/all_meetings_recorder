@@ -230,3 +230,21 @@ def test_voice_memory_recalls_named_voice(tmp_path):
     unit = lambda v: v / np.linalg.norm(v)  # noqa: E731
     cents = {0: unit(carlos), 1: unit(laura + rng.normal(scale=0.3, size=192))}
     assert recall(cfg, Session(new), cents) == {1: "Laura"}
+
+
+def test_pick_model_by_quality(tmp_path):
+    import pytest
+
+    from recorder_worker.config import load_config
+    from recorder_worker.steps.transcribe import pick_model
+    from recorder_worker.util import PermanentError
+
+    cfg = load_config()
+    cfg.whisper.model, cfg.whisper.fast_model = tmp_path / "large.bin", tmp_path / "turbo.bin"
+    with pytest.raises(PermanentError):
+        pick_model(cfg, "max")
+    cfg.whisper.fast_model.write_bytes(b"x")          # sólo el rápido: se usa siempre
+    assert pick_model(cfg, "max") == cfg.whisper.fast_model
+    cfg.whisper.model.write_bytes(b"x")               # los dos: según la calidad
+    assert pick_model(cfg, "max") == cfg.whisper.model
+    assert pick_model(cfg, "fast") == cfg.whisper.fast_model

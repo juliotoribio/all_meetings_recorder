@@ -37,6 +37,16 @@ final class AppModel: ObservableObject {
     /// Idioma para transcribir: "auto", "es" o "en" (se recuerda; vale para grabar y para subir audios).
     @Published private(set) var language = UserDefaults.standard.string(forKey: "language") ?? "auto"
 
+    /// Calidad: "max" (large-v3, el más preciso) o "fast" (turbo, ~2,5× más rápido).
+    @Published private(set) var quality = UserDefaults.standard.string(forKey: "quality") ?? "max"
+
+    func setQuality(_ code: String) {
+        guard code != quality else { return }
+        quality = code
+        UserDefaults.standard.set(code, forKey: "quality")
+        AppLog.write("calidad: \(code)")
+    }
+
     func setLanguage(_ code: String) {
         guard code != language else { return }
         language = code
@@ -154,7 +164,7 @@ final class AppModel: ObservableObject {
             let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime]
             try SessionStore.writeManifest([
                 "id": dir.lastPathComponent, "title": title, "status": "recording",
-                "started_at": iso.string(from: Date()), "language": language,
+                "started_at": iso.string(from: Date()), "language": language, "quality": quality,
                 "source": "app", "source_apps": app.map { [$0] } ?? [], "tracks": [String: Any](),
                 "chunk_seconds": ChunkPolicy.target,
             ], to: dir)
@@ -350,7 +360,7 @@ final class AppModel: ObservableObject {
         for f in files {
             importing += 1
             AppLog.write("subir audio: \(f.lastPathComponent)")
-            jobs.append(["import", f.path, "--queue-only", "--no-copy", "--language", language])
+            jobs.append(["import", f.path, "--queue-only", "--no-copy", "--language", language, "--quality", quality])
         }
         jobs.append(["once"])
         runNextJob()

@@ -34,7 +34,9 @@ MODELS_DIR = _p("~/RecorderJT/models")
 @dataclass
 class WhisperConfig:
     bin: Path = field(default_factory=_whisper_bin)
-    model: Path = MODELS_DIR / "ggml-large-v3.bin"
+    model: Path = MODELS_DIR / "ggml-large-v3.bin"               # calidad máxima
+    fast_model: Path = MODELS_DIR / "ggml-large-v3-turbo-q5_0.bin"  # modo rápido (turbo)
+    quality: str = "max"  # max | fast (la app guarda la elegida en cada grabación)
     vad_model: Path | None = MODELS_DIR / "ggml-silero-v6.2.0.bin"
     language: str = "auto"
     threads: int = field(default_factory=lambda: min(8, os.cpu_count() or 4))
@@ -175,6 +177,9 @@ def load_config(path: Path | None = None) -> Config:
         whisper_model = data.get("whisper", {}).get("model")
         if whisper_model:
             cfg.whisper.model = _p(whisper_model)  # "model" sólo es ruta en [whisper]
+        fast_model = data.get("whisper", {}).get("fast_model")
+        if fast_model:
+            cfg.whisper.fast_model = _p(fast_model)
         _apply(cfg.claude, data.get("claude", {}))
         _apply(cfg.summary, data.get("summary", {}))
         sp = dict(data.get("speakers", {}))

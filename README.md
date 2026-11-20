@@ -19,7 +19,7 @@ Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junt
 |---|---|---|
 | Mac | Apple Silicon (M1 o más nuevo) | M1 Pro/Max, M2 Pro o más nuevo |
 | macOS | **14.4 Sonoma** (necesario para grabar el audio de las reuniones) | 15 o más nuevo |
-| Memoria | 8 GB | 16 GB |
+| Memoria | 8 GB (con el modelo rápido) | 16 GB |
 | Disco | 6 GB libres (modelo de voz + grabaciones) | 20 GB |
 
 Además necesitas [Homebrew](https://brew.sh/es/) y las herramientas de línea de comandos de Xcode (el instalador las pide si faltan).
@@ -41,7 +41,14 @@ El instalador:
 3. Prepara el worker de Python.
 4. Compila la app y la deja en `~/Applications/All Meetings Recorder.app`.
 
-Luego, en la app, abre **Configuración** (⚙️ junto a *Fuentes*, o `⌘,`) y pulsa **Descargar** en los modelos (≈ 3,1 GB). Si prefieres que el instalador los descargue también, usa `./install.sh --models`.
+Luego, en la app, abre **Configuración** (⚙️ junto a *Fuentes*, o `⌘,`) y descarga un modelo de voz. Basta con uno:
+
+| Modelo | Tamaño | Velocidad (M1 Max) | Para |
+|---|---|---|---|
+| **Calidad máxima** (large-v3) | ≈ 3,1 GB | ~9× tiempo real | Reuniones difíciles: ruido, acentos, nombres, spanglish |
+| **Rápido** (large-v3-turbo) | 574 MB | ~20× tiempo real | Macs de 8 GB, poco disco o cuando importa la rapidez |
+
+Si tienes los dos, eliges en *Calidad* (Máxima o Rápida) antes de grabar o subir un audio. El instalador también puede descargarlos: `./install.sh --models` (calidad máxima) o `./install.sh --models-fast` (rápido).
 
 La primera vez, macOS pedirá dos permisos:
 

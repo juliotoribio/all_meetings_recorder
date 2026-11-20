@@ -122,6 +122,7 @@ def cmd_import(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
         "imported_from": str(src),
         "started_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "language": a.language or cfg.whisper.language,
+        "quality": a.quality or cfg.whisper.quality,
         "tracks": tracks,
     }
     if a.resume:
@@ -269,6 +270,7 @@ def _local_status(cfg: Config) -> tuple[str, bool]:
 # Cómo instalar lo que falte (la app lo ofrece en Configuración).
 DOWNLOADS = {
     "whisper_model": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+    "fast_model": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
     "vad_model": "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
     "speakers_model": "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
                       "speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
@@ -283,9 +285,13 @@ def doctor_components(cfg: Config) -> list[dict]:
     items = [
         {"id": "whisper_cli", "name": "Whisper (programa)", "detail": "Transcribe la voz a texto",
          "path": str(cfg.whisper.bin), "ok": cfg.whisper.bin.is_file(), "brew": "whisper-cpp"},
-        {"id": "whisper_model", "name": "Modelo de voz large-v3", "detail": "≈ 3,1 GB · mejor calidad en español",
+        # Basta con uno de los dos modelos: el otro queda como opcional.
+        {"id": "whisper_model", "name": "Modelo de voz · calidad máxima", "detail": "large-v3 · ≈ 3,1 GB · el más preciso",
          "path": str(cfg.whisper.model), "ok": cfg.whisper.model.is_file(),
-         "url": DOWNLOADS["whisper_model"], "size_mb": 3095},
+         "url": DOWNLOADS["whisper_model"], "size_mb": 3095, "optional": cfg.whisper.fast_model.is_file()},
+        {"id": "fast_model", "name": "Modelo de voz · rápido", "detail": "large-v3-turbo · 574 MB · varias veces más rápido",
+         "path": str(cfg.whisper.fast_model), "ok": cfg.whisper.fast_model.is_file(),
+         "url": DOWNLOADS["fast_model"], "size_mb": 574, "optional": cfg.whisper.model.is_file() or not cfg.whisper.fast_model.is_file()},
         {"id": "vad_model", "name": "Detector de voz (Silero)", "detail": "Salta silencios y evita frases inventadas",
          "path": str(vad) if vad else "", "ok": bool(vad and vad.is_file()),
          "url": DOWNLOADS["vad_model"] if vad else None, "size_mb": 1},
@@ -314,7 +320,8 @@ def cmd_doctor(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
     checks = [
         ("config", str(cfg.source or "(valores por defecto)"), True),
         ("whisper-cli", str(cfg.whisper.bin), cfg.whisper.bin.is_file()),
-        ("modelo whisper", str(cfg.whisper.model), cfg.whisper.model.is_file()),
+        ("modelo whisper", str(cfg.whisper.model), cfg.whisper.model.is_file() or cfg.whisper.fast_model.is_file()),
+        ("modelo rápido", str(cfg.whisper.fast_model), True),
         ("modelo VAD", str(cfg.whisper.vad_model), bool(cfg.whisper.vad_model and cfg.whisper.vad_model.is_file())),
         ("ffmpeg", shutil.which("ffmpeg") or "no encontrado", bool(shutil.which("ffmpeg"))),
         ("separar voces", str(cfg.speakers.model) if cfg.speakers.enabled else "desactivado",
@@ -355,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--mic", help="pista separada de tu micrófono (el archivo principal queda como 'Participantes')")
     sp.add_argument("--mic-offset", default=0.0, type=float, help="segundos de retraso de la pista mic")
     sp.add_argument("--language", help="es, en, auto…")
+    sp.add_argument("--quality", choices=["max", "fast"], help="max = large-v3; fast = turbo (más rápido)")
     sp.add_argument("--template", help="plantilla de resumen (config/templates/<nombre>.md)")
     sp.add_argument("--resume", action="store_true", help="además de transcribir, resumir con un LLM")
     sp.add_argument("--provider", choices=PROVIDERS, help="proveedor del resumen (deepseek, local, claude)")

@@ -272,11 +272,21 @@ def _vad_enabled(cfg: Config) -> bool:
     return bool(cfg.whisper.vad_model and cfg.whisper.vad_model.is_file())
 
 
-def _whisper(cfg: Config, wav: Path, out_prefix: Path, language: str, timeout: float) -> Path:
+def pick_model(cfg: Config, quality: str = "max") -> Path:
+    """Modelo según la calidad elegida; si falta, el otro que haya."""
     w = cfg.whisper
-    if not w.model.is_file():
-        raise PermanentError(f"no existe el modelo de whisper: {w.model}")
-    cmd = [str(w.bin), "-m", str(w.model), "-f", str(wav), "-l", language, "-t", str(w.threads),
+    order = [w.fast_model, w.model] if quality == "fast" else [w.model, w.fast_model]
+    for m in order:
+        if m and m.is_file():
+            return m
+    raise PermanentError(f"no hay modelo de whisper: descarga uno en Configuración ({w.model.name} o {w.fast_model.name})")
+
+
+def _whisper(cfg: Config, wav: Path, out_prefix: Path, language: str, timeout: float,
+             model: Path | None = None) -> Path:
+    w = cfg.whisper
+    model = model or pick_model(cfg)
+    cmd = [str(w.bin), "-m", str(model), "-f", str(wav), "-l", language, "-t", str(w.threads),
            "-mc", "0", "-ojf", "-of", str(out_prefix), "-np"]
     if _vad_enabled(cfg):
         cmd += ["--vad", "-vm", str(w.vad_model), *vad_args(cfg)]
@@ -319,7 +329,7 @@ def cut_points(intervals: list[tuple[float, float]], duration_s: float, target_s
 
 
 def _transcribe_pieces(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
-                       cuts: list[float], vad_map) -> list[dict]:
+                       cuts: list[float], vad_map, model: Path) -> list[dict]:
     pdir = work / f"{stem}.pieces"
     shutil.rmtree(pdir, ignore_errors=True)
     pdir.mkdir(parents=True)
@@ -329,13 +339,15 @@ def _transcribe_pieces(cfg: Config, wav: Path, work: Path, stem: str, language: 
         piece = pdir / f"p{i:04d}.wav"
         run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(wav), "-ss", f"{a:.2f}",
              "-t", f"{b - a:.2f}", "-c", "copy", str(piece)], timeout=600)
-        raw = _whisper(cfg, piece, piece.with_suffix(""), language, _timeout(cfg, b - a))
+        raw = _whisper(cfg, piece, piece.with_suffix(""), language, _timeout(cfg, b - a), model)
         segs += parse_whisper_json(raw, offset_s=a, vad=vad_map(piece))
     return segs
 
 
-def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float) -> list[dict]:
+def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
+                   model: Path | None = None) -> list[dict]:
     """Transcribe una pista completa; si falla, por bloques."""
+    model = model or pick_model(cfg)
 
     def vad_map(path: Path) -> VadMap | None:
         return VadMap(vad_intervals(cfg, path)) if _vad_enabled(cfg) else None
@@ -345,10 +357,10 @@ def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str,
         cuts = cut_points(intervals, duration_s)
         if cuts:
             log.info("idioma automático: %d tramos (cada uno detecta su idioma)", len(cuts) + 1)
-            return _transcribe_pieces(cfg, wav, work, stem, language, duration_s, cuts, vad_map)
+            return _transcribe_pieces(cfg, wav, work, stem, language, duration_s, cuts, vad_map, model)
 
     try:
-        raw = _whisper(cfg, wav, work / f"{stem}.whisper", language, _timeout(cfg, duration_s))
+        raw = _whisper(cfg, wav, work / f"{stem}.whisper", language, _timeout(cfg, duration_s), model)
         return parse_whisper_json(raw, vad=vad_map(wav))
     except PermanentError:
         raise
@@ -363,7 +375,7 @@ def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str,
          "-segment_time", str(chunk_s), "-c", "copy", str(cdir / "c%04d.wav")], timeout=600)
     segs: list[dict] = []
     for i, chunk in enumerate(sorted(cdir.glob("c*.wav"))):
-        raw = _whisper(cfg, chunk, chunk.with_suffix(""), language, _timeout(cfg, chunk_s))
+        raw = _whisper(cfg, chunk, chunk.with_suffix(""), language, _timeout(cfg, chunk_s), model)
         segs += parse_whisper_json(raw, offset_s=i * chunk_s, vad=vad_map(chunk))
     return segs
 
@@ -376,13 +388,14 @@ class Transcribe:
 
     def run(self, s: Session, cfg: Config) -> None:
         lang = s.language(cfg.whisper.language)
+        model = pick_model(cfg, s.manifest().get("quality") or cfg.whisper.quality)
         for t in usable_tracks(s):
             out = s.segments(t.name)
             if out.is_file():
                 continue
             dur = track_duration(s, t.name)
-            log.info("[%s] transcribiendo %s (%.0fs de audio)", s.id, t.name, dur)
-            segs = transcribe_wav(cfg, s.wav16k(t.name), s.work, t.name, lang, dur)
+            log.info("[%s] transcribiendo %s (%.0fs de audio, %s)", s.id, t.name, dur, model.name)
+            segs = transcribe_wav(cfg, s.wav16k(t.name), s.work, t.name, lang, dur, model)
             segs = clean_segments(segs)
-            atomic_write_json(out, {"track": t.name, "language": lang, "segments": segs})
+            atomic_write_json(out, {"track": t.name, "language": lang, "model": model.name, "segments": segs})
             log.info("[%s] %s: %d segmentos", s.id, t.name, len(segs))
