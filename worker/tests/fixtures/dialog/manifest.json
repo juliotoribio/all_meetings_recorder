@@ -1,0 +1,16 @@
+{
+  "id": "fixture",
+  "title": "Revisión lanzamiento app (sintético)",
+  "status": "recorded",
+  "language": "es",
+  "tracks": {
+    "mic": {
+      "file": "mic.wav",
+      "first_host_time_s": 0.0
+    },
+    "system": {
+      "file": "system.wav",
+      "first_host_time_s": 0.0
+    }
+  }
+}

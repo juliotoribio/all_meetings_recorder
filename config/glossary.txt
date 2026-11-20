@@ -1,0 +1,7 @@
+# Un término por línea: nombres de personas, productos, clientes, siglas.
+# Se usa como prompt de whisper (ortografía) y como referencia para Claude.
+backend
+frontend
+Teams
+Zoom
+Google Meet

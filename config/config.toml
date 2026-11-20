@@ -1,0 +1,40 @@
+# Recorder JT — configuración del worker.
+# Rutas con ~ se expanden. Rutas relativas (glosario, plantillas) son relativas a la raíz del repo.
+
+[whisper]
+# Por defecto: whisper-cli de Homebrew y los modelos en ~/RecorderJT/models
+# (la app los descarga desde Configuración). Para usar otros, descomenta:
+# bin       = "/opt/homebrew/bin/whisper-cli"
+# model     = "~/RecorderJT/models/ggml-large-v3.bin"
+# vad_model = "~/RecorderJT/models/ggml-silero-v6.2.0.bin"
+language  = "es"        # es | en | auto
+# threads = 8          # por defecto: núcleos del Mac (máx. 8)
+glossary_file = "config/glossary.txt"
+
+[summary]
+# false = sólo transcribe (gratis). El resumen se pide con: recorder resume [--provider ...]
+auto     = false
+provider = "deepseek"   # deepseek | local | claude
+
+[deepseek]
+base_url = "https://api.deepseek.com"
+model    = "deepseek-chat"
+
+[local]
+# LM Studio (servidor en el puerto 1234). Gratis y sin enviar nada fuera del Mac.
+base_url       = "http://localhost:1234/v1"
+model          = "qwen/qwen3.8-27b"
+context_length = 32768
+
+[claude]
+model    = "claude-opus-5-5"
+effort   = "medium"     # low | medium | high
+template = "general"    # config/templates/<nombre>.md
+
+[paths]
+home = "~/RecorderJT"   # sessions/, resumenes/, logs/, recorder.db
+
+[worker]
+poll_seconds = 15
+max_attempts = 3
+notify = true

@@ -1,0 +1,20 @@
+.DS_Store
+
+# compilación
+recorder-app/.build/
+*.app/
+
+# Python
+worker/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# modelos y audio (se descargan / se graban en ~/RecorderJT)
+*.bin
+*.onnx
+*.part
+
+# ajustes personales
+config/config.local.toml
+.env
