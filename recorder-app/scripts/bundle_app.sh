@@ -1,9 +1,9 @@
 #!/bin/zsh
-# Compila la app y la instala en ~/Applications/Recorder JT.app
+# Compila la app y la instala en ~/Applications/All Meetings Recorder.app
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$(cd .. && pwd)"
-APP="$HOME/Applications/Recorder JT.app"
+APP="$HOME/Applications/All Meetings Recorder.app"
 
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/RecorderJT"
@@ -13,6 +13,7 @@ osascript -e 'tell application id "com.jt.recorderjt" to quit' 2>/dev/null || tr
 for i in {1..10}; do pgrep -x RecorderJT >/dev/null || break; sleep 0.5; done
 pkill -x RecorderJT 2>/dev/null || true
 rm -rf "$APP"
+rm -rf "$HOME/Applications/Recorder JT.app"   # nombre anterior de la app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/RecorderJT"
 sed "s#__WORKER_CLI__#$REPO/worker/.venv/bin/recorder#" Resources/Info.plist > "$APP/Contents/Info.plist"

@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Recorder JT</string>
-  <key>CFBundleDisplayName</key><string>Recorder JT</string>
+  <key>CFBundleName</key><string>All Meetings Recorder</string>
+  <key>CFBundleDisplayName</key><string>All Meetings Recorder</string>
   <key>CFBundleIdentifier</key><string>com.jt.recorderjt</string>
   <key>CFBundleExecutable</key><string>RecorderJT</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -12,9 +12,9 @@
   <key>LSMinimumSystemVersion</key><string>14.4</string>
   <key>LSUIElement</key><false/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Recorder JT graba tu micrófono para transcribir tus reuniones. El audio no sale de tu Mac.</string>
+  <string>All Meetings Recorder graba tu micrófono para transcribir tus reuniones. El audio no sale de tu Mac.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>Recorder JT graba el audio de tus reuniones (Teams, Zoom, Meet) para transcribirlas. El audio no sale de tu Mac.</string>
+  <string>All Meetings Recorder graba el audio de tus reuniones (Teams, Zoom, Meet) para transcribirlas. El audio no sale de tu Mac.</string>
   <key>RJTWorkerCLI</key><string>__WORKER_CLI__</string>
 </dict>
 </plist>

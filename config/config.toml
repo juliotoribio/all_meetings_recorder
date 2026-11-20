@@ -1,4 +1,4 @@
-# Recorder JT — configuración del worker.
+# All Meetings Recorder — configuración del worker.
 # Rutas con ~ se expanden. Rutas relativas (glosario, plantillas) son relativas a la raíz del repo.
 
 [whisper]

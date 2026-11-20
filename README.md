@@ -1,4 +1,4 @@
-# Recorder JT
+# All Meetings Recorder
 
 Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junto con tu micrófono y lo transcribe **en tu propio Mac** con Whisper. También separa las voces (Persona 1, Persona 2…).
 
@@ -6,6 +6,11 @@ Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junt
 - **Gratis:** no usa APIs de pago. El resumen con IA es opcional y sólo se hace si lo pides.
 - **Mientras grabas:** transcribe por bloques de 5 minutos, así el texto está listo casi al terminar.
 - **También sube audios** (m4a, mp3, wav, notas de voz de WhatsApp, vídeos…) para transcribirlos.
+
+![Transcripción de una reunión con voces separadas y reproductor](docs/img/transcripcion.png)
+
+<p align="center"><img src="docs/img/configuracion.png" width="520" alt="Configuración: estado de Whisper, los modelos y FFmpeg"></p>
+<p align="center"><sub>Configuración: muestra qué falta e instala o descarga con un clic.</sub></p>
 
 ## Requisitos
 
@@ -33,7 +38,7 @@ El instalador:
 1. Comprueba el Mac.
 2. Instala whisper, ffmpeg y uv con Homebrew.
 3. Prepara el worker de Python.
-4. Compila la app y la deja en `~/Applications/Recorder JT.app`.
+4. Compila la app y la deja en `~/Applications/All Meetings Recorder.app`.
 
 Luego, en la app, abre **Configuración** (⚙️ junto a *Fuentes*, o `⌘,`) y pulsa **Descargar** en los modelos (≈ 3,1 GB). Si prefieres que el instalador los descargue también, usa `./install.sh --models`.
 
@@ -86,7 +91,7 @@ worker/.venv/bin/recorder doctor
 ## Desinstalar
 
 ```bash
-rm -rf "$HOME/Applications/Recorder JT.app"
+rm -rf "$HOME/Applications/All Meetings Recorder.app"
 rm -rf ~/RecorderJT   # ⚠️ borra también las grabaciones y los modelos
 ```
 

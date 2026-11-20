@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func snapshot(to path: String, sheet: Bool = false) {
         let win = sheet ? NSApp.windows.first(where: { $0.isSheet && $0.isVisible })
-                        : NSApp.windows.first(where: { $0.title == "Recorder JT" })
+                        : NSApp.windows.first(where: { $0.title == "All Meetings Recorder" })
         guard let view = win?.contentView?.superview,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func showMainWindow() {
-        guard let window = NSApp.windows.first(where: { $0.title == "Recorder JT" }) else { return }
+        guard let window = NSApp.windows.first(where: { $0.title == "All Meetings Recorder" }) else { return }
         let mouse = NSEvent.mouseLocation
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main {
             let vf = screen.visibleFrame
@@ -88,7 +88,7 @@ struct RecorderApp: App {
     var body: some Scene {
         // Ventana principal: se abre al lanzar la app y al hacer clic en el Dock
         // (la barra de menú puede quedar oculta tras el notch).
-        Window("Recorder JT", id: "main") {
+        Window("All Meetings Recorder", id: "main") {
             MainView(model: model)
                 .onAppear { model.requestMicAtLaunch() }
         }

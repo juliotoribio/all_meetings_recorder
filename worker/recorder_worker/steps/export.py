@@ -34,4 +34,4 @@ class Export:
         atomic_write_json(s.export_marker, {"exported_to": str(dest), "at": time.time()})
         if cfg.worker.notify:
             what = "Resumen listo" if src == s.summary_md else "Transcripción lista"
-            notify("Recorder JT", f"{what}: {title}")
+            notify("All Meetings Recorder", f"{what}: {title}")

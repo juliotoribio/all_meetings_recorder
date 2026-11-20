@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Recorder JT — instalación en este Mac.
+# All Meetings Recorder — instalación en este Mac.
 #
 #   ./install.sh            instala dependencias, el worker y la app
 #   ./install.sh --models   además descarga los modelos (≈ 3,1 GB)
@@ -65,8 +65,8 @@ fi
 
 step "App"
 recorder-app/scripts/bundle_app.sh
-open "$HOME/Applications/Recorder JT.app"
+open "$HOME/Applications/All Meetings Recorder.app"
 
-print -P "\n%F{green}%BListo.%b%f Recorder JT está en ~/Applications."
+print -P "\n%F{green}%BListo.%b%f All Meetings Recorder está en ~/Applications."
 [[ -f "$MODELS/ggml-large-v3.bin" ]] || print "Falta un paso: en la app abre Configuración (⌘,) y pulsa Descargar en los modelos."
 print "La primera vez macOS pedirá permiso para el micrófono y para grabar el audio del sistema."

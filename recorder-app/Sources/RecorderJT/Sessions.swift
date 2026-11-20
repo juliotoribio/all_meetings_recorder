@@ -57,7 +57,9 @@ struct SessionInfo: Identifiable, Equatable {
 
 /// Lee y escribe sesiones en ~/RecorderJT/sessions (mismo formato que el worker).
 enum SessionStore {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("RecorderJT")
+    /// Carpeta de datos. `RJT_HOME` permite otra (p. ej. datos de demostración para capturas).
+    static let home: URL = ProcessInfo.processInfo.environment["RJT_HOME"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("RecorderJT")
     static let sessionsDir = home.appendingPathComponent("sessions")
 
     static func manifest(_ dir: URL) -> [String: Any]? {

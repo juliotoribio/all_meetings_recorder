@@ -231,7 +231,7 @@ struct MainView: View {
             RecordingView(model: model, session: nil)
         } else {
             VStack(spacing: 14) {
-                Text("Recorder JT").font(T.display(56)).tracking(-1.2)
+                Text("All Meetings Recorder").font(T.display(56)).tracking(-1.2).lineLimit(1).minimumScaleFactor(0.5).padding(.horizontal, 24)
                 Text("Graba una reunión o sube un audio para transcribirlo.")
                     .font(.system(size: 15)).foregroundStyle(T.muted2)
             }
@@ -275,7 +275,7 @@ struct Header: View {
                 }
             }
             HStack {
-                Text("Recorder JT").font(.system(size: 15, weight: .medium))
+                Text("All Meetings Recorder").font(.system(size: 15, weight: .medium))
                     .padding(.leading, 84)  // deja sitio a los botones de la ventana
                     .allowsHitTesting(false)
                 Spacer()
