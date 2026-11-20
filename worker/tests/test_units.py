@@ -152,3 +152,28 @@ def test_speakers_chunk_without_voiceprints(tmp_path: Path):
     data = np.load(s.work / "system.000.emb.npz")
     assert len(data["idx"]) == 0
     assert assign_speakers(cfg, s, {"system.000": segs}) == 0
+
+
+def test_cut_points_auto_language():
+    from recorder_worker.steps.transcribe import cut_points
+
+    # corto: no se corta
+    assert cut_points([(0, 100)], 200, target_s=180) == []
+    # corta en mitad del primer silencio a partir de ~180 s
+    iv = [(0, 170), (175, 190), (194, 400), (402, 600)]
+    assert cut_points(iv, 600, target_s=180) == [192.0, 401.0]
+    # sin silencios: corte fijo
+    assert cut_points([(0, 600)], 600, target_s=180) == [180, 360]
+    assert cut_points([], 600, target_s=180) == [180, 360]
+
+
+def test_glossary_prompt_language(tmp_path):
+    from recorder_worker.config import load_config
+    from recorder_worker.steps.transcribe import glossary_prompt
+
+    cfg = load_config()
+    g = tmp_path / "g.txt"
+    g.write_text("Laura\nOKR\n", encoding="utf-8")
+    cfg.whisper.glossary_file = g
+    assert glossary_prompt(cfg, "es") == "Glosario: Laura, OKR."
+    assert glossary_prompt(cfg, "auto") == "Laura, OKR."

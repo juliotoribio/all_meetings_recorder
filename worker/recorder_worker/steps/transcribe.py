@@ -4,6 +4,9 @@
 - `-mc 0` evita bucles de repetición en audios largos.
 - Glosario como prompt inicial para nombres propios.
 - Si la pista completa falla (crash/timeout) se reintenta por bloques.
+- Idioma "auto": whisper detecta el idioma una sola vez (primeros 30 s), así
+  que la pista se corta en tramos de ~3 min por los silencios y cada tramo se
+  detecta por separado (reuniones que cambian de español a inglés).
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ def is_hallucination(text: str) -> bool:
     return n in HALLUCINATIONS
 
 
-def glossary_prompt(cfg: Config) -> str | None:
+def glossary_prompt(cfg: Config, language: str = "es") -> str | None:
     f = cfg.whisper.glossary_file
     if not f or not f.is_file():
         return None
@@ -66,7 +69,9 @@ def glossary_prompt(cfg: Config) -> str | None:
              if ln.strip() and not ln.lstrip().startswith("#")]
     if not terms:
         return None
-    prompt = "Glosario: " + ", ".join(terms) + "."
+    # En español se presenta como glosario; en otro idioma o "auto" sólo la
+    # lista, para no empujar a whisper a escribir en español.
+    prompt = ("Glosario: " if language == "es" else "") + ", ".join(terms) + "."
     return prompt[:600]  # whisper admite ~224 tokens de prompt
 
 
@@ -260,7 +265,7 @@ def _whisper(cfg: Config, wav: Path, out_prefix: Path, language: str, timeout: f
         cmd += ["--vad", "-vm", str(w.vad_model), *vad_args(cfg)]
     else:
         log.warning("modelo VAD no encontrado (%s): se transcribe sin VAD", w.vad_model)
-    prompt = glossary_prompt(cfg)
+    prompt = glossary_prompt(cfg, language)
     if prompt:
         cmd += ["--prompt", prompt]
     run(cmd, timeout=timeout)
@@ -274,11 +279,56 @@ def _timeout(cfg: Config, seconds: float) -> float:
     return cfg.whisper.timeout_base_s + seconds * cfg.whisper.timeout_factor
 
 
+AUTO_PIECE_S = 180.0  # tamaño orientativo de cada tramo con idioma "auto"
+
+
+def cut_points(intervals: list[tuple[float, float]], duration_s: float, target_s: float | None = None) -> list[float]:
+    """Puntos de corte cada ~target_s segundos, en mitad de un silencio.
+
+    Si no hay silencio en ~1,5 × target_s (o no hay VAD) se corta igualmente.
+    """
+    target_s = target_s or AUTO_PIECE_S
+    if duration_s <= target_s * 1.5:
+        return []
+    gaps = [(a[1] + b[0]) / 2 for a, b in zip(intervals, intervals[1:]) if b[0] > a[1]]
+    cuts: list[float] = []
+    last = 0.0
+    while duration_s - last > target_s * 1.5:
+        ok = [g for g in gaps if last + target_s <= g <= last + target_s * 1.5]
+        cut = ok[0] if ok else last + target_s
+        cuts.append(cut)
+        last = cut
+    return cuts
+
+
+def _transcribe_pieces(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
+                       cuts: list[float], vad_map) -> list[dict]:
+    pdir = work / f"{stem}.pieces"
+    shutil.rmtree(pdir, ignore_errors=True)
+    pdir.mkdir(parents=True)
+    bounds = [0.0, *cuts, duration_s]
+    segs: list[dict] = []
+    for i, (a, b) in enumerate(zip(bounds, bounds[1:])):
+        piece = pdir / f"p{i:04d}.wav"
+        run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(wav), "-ss", f"{a:.2f}",
+             "-t", f"{b - a:.2f}", "-c", "copy", str(piece)], timeout=600)
+        raw = _whisper(cfg, piece, piece.with_suffix(""), language, _timeout(cfg, b - a))
+        segs += parse_whisper_json(raw, offset_s=a, vad=vad_map(piece))
+    return segs
+
+
 def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float) -> list[dict]:
     """Transcribe una pista completa; si falla, por bloques."""
 
     def vad_map(path: Path) -> VadMap | None:
         return VadMap(vad_intervals(cfg, path)) if _vad_enabled(cfg) else None
+
+    if language == "auto":
+        intervals = vad_intervals(cfg, wav) if _vad_enabled(cfg) else []
+        cuts = cut_points(intervals, duration_s)
+        if cuts:
+            log.info("idioma automático: %d tramos (cada uno detecta su idioma)", len(cuts) + 1)
+            return _transcribe_pieces(cfg, wav, work, stem, language, duration_s, cuts, vad_map)
 
     try:
         raw = _whisper(cfg, wav, work / f"{stem}.whisper", language, _timeout(cfg, duration_s))

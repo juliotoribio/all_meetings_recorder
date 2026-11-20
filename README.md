@@ -5,6 +5,7 @@ Grabadora de reuniones para macOS. Graba el audio de **Teams, Zoom o Meet** junt
 - **Privado:** el audio nunca sale del Mac. No hace falta internet ni cuentas.
 - **Gratis:** no usa APIs de pago. El resumen con IA es opcional y sólo se hace si lo pides.
 - **Mientras grabas:** transcribe por bloques de 5 minutos, así el texto está listo casi al terminar.
+- **Español, inglés o ambos:** en *Idioma*, *Auto* detecta el idioma cada pocos minutos, así que sirve para reuniones que cambian de idioma o mezclan los dos.
 - **También sube audios** (m4a, mp3, wav, notas de voz de WhatsApp, vídeos…) para transcribirlos.
 
 ![Transcripción de una reunión con voces separadas y reproductor](docs/img/transcripcion.png)

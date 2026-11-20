@@ -7,7 +7,7 @@
 # bin       = "/opt/homebrew/bin/whisper-cli"
 # model     = "~/RecorderJT/models/ggml-large-v3.bin"
 # vad_model = "~/RecorderJT/models/ggml-silero-v6.2.0.bin"
-language  = "es"        # es | en | auto
+language  = "auto"      # auto | es | en  (la app guarda el idioma elegido en cada grabación)
 # threads = 8          # por defecto: núcleos del Mac (máx. 8)
 glossary_file = "config/glossary.txt"
 

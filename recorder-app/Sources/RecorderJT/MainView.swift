@@ -386,6 +386,7 @@ struct Sidebar: View {
                 }
                 SourceSwitch(label: "Mi micrófono", on: model.micOn, set: model.setMic)
                 SourceSwitch(label: "Audio de la reunión", on: model.systemOn, set: model.setSystem)
+                LanguagePicker(value: model.language, disabled: model.isRecording, set: model.setLanguage)
                 if !model.isRecording && model.micOn && !model.systemOn {
                     Text("Sólo micrófono: para reuniones presenciales; se separan las voces de la sala.")
                         .font(.system(size: 11.5)).foregroundStyle(T.muted)
@@ -572,6 +573,41 @@ struct SourceSwitch: View {
         .help(on ? "Apagar \(label.lowercased())" : "Encender \(label.lowercased())")
         .accessibilityAddTraits(.isToggle)
         .accessibilityValue(on ? "Encendido" : "Apagado")
+    }
+}
+
+struct LanguagePicker: View {
+    let value: String
+    let disabled: Bool
+    let set: (String) -> Void
+    private let options = [("auto", "Auto"), ("es", "Español"), ("en", "English")]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Idioma").font(.system(size: 14)).foregroundStyle(T.text2)
+            Spacer()
+            HStack(spacing: 2) {
+                ForEach(options, id: \.0) { code, label in
+                    let sel = code == value
+                    Button { set(code) } label: {
+                        Text(label).font(.system(size: 12, weight: sel ? .semibold : .regular))
+                            .foregroundStyle(sel ? T.ink : T.muted)
+                            .padding(.horizontal, 7).frame(height: 24)
+                            .background(Capsule().fill(sel ? T.accent : .clear))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+            .padding(2)
+            .background(Capsule().fill(Color(hex: 0x2A2A2A)))
+            .overlay(Capsule().strokeBorder(T.border, lineWidth: 1))
+        }
+        .disabled(disabled)
+        .opacity(disabled ? 0.5 : 1)
+        .help(disabled ? "El idioma se elige antes de grabar."
+              : "Auto detecta el idioma cada pocos minutos: sirve si la reunión mezcla español e inglés.")
     }
 }
 

@@ -36,7 +36,7 @@ class WhisperConfig:
     bin: Path = field(default_factory=_whisper_bin)
     model: Path = MODELS_DIR / "ggml-large-v3.bin"
     vad_model: Path | None = MODELS_DIR / "ggml-silero-v6.2.0.bin"
-    language: str = "es"
+    language: str = "auto"
     threads: int = field(default_factory=lambda: min(8, os.cpu_count() or 4))
     # timeout = base + duración_audio * factor (large-v3 en M1 Max ≈ 11-20x tiempo real)
     timeout_base_s: int = 180

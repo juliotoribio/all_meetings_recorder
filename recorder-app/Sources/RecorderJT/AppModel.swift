@@ -34,6 +34,15 @@ final class AppModel: ObservableObject {
     /// Fuentes a grabar (se recuerdan). Se pueden cambiar también durante la grabación.
     @Published private(set) var micOn = UserDefaults.standard.object(forKey: "micOn") as? Bool ?? true
     @Published private(set) var systemOn = UserDefaults.standard.object(forKey: "systemOn") as? Bool ?? true
+    /// Idioma para transcribir: "auto", "es" o "en" (se recuerda; vale para grabar y para subir audios).
+    @Published private(set) var language = UserDefaults.standard.string(forKey: "language") ?? "auto"
+
+    func setLanguage(_ code: String) {
+        guard code != language else { return }
+        language = code
+        UserDefaults.standard.set(code, forKey: "language")
+        AppLog.write("idioma: \(code)\(isRecording ? " (se aplica desde la próxima grabación)" : "")")
+    }
 
     private var sessionDir: URL?
     private var startDate: Date?
@@ -145,7 +154,7 @@ final class AppModel: ObservableObject {
             let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime]
             try SessionStore.writeManifest([
                 "id": dir.lastPathComponent, "title": title, "status": "recording",
-                "started_at": iso.string(from: Date()), "language": "es",
+                "started_at": iso.string(from: Date()), "language": language,
                 "source": "app", "source_apps": app.map { [$0] } ?? [], "tracks": [String: Any](),
                 "chunk_seconds": ChunkPolicy.target,
             ], to: dir)
@@ -341,7 +350,7 @@ final class AppModel: ObservableObject {
         for f in files {
             importing += 1
             AppLog.write("subir audio: \(f.lastPathComponent)")
-            jobs.append(["import", f.path, "--queue-only", "--no-copy"])
+            jobs.append(["import", f.path, "--queue-only", "--no-copy", "--language", language])
         }
         jobs.append(["once"])
         runNextJob()
