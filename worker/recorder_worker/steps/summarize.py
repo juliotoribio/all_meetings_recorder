@@ -150,8 +150,10 @@ def call_claude(client: anthropic.Anthropic, cfg: Config, system: str, user: str
 # ---------------------------------------------------------------- lógica
 
 
-def transcript_text(segs: list[dict]) -> str:
-    return "\n".join(f"[{fmt_ts(s['start'])}] {s['speaker']}: {s['text']}" for s in segs)
+def transcript_text(segs: list[dict], names: dict[str, str] | None = None) -> str:
+    """Una línea por frase; con los nombres que el usuario puso a las voces (Persona 2 → Ana)."""
+    names = names or {}
+    return "\n".join(f"[{fmt_ts(s['start'])}] {names.get(s['speaker'], s['speaker'])}: {s['text']}" for s in segs)
 
 
 def _chunks(lines: list[str], max_chars: int) -> list[str]:
@@ -188,7 +190,7 @@ def summarize_session(s: Session, cfg: Config, template: str | None = None,
     provider = provider or session_provider(s, cfg)
     tpl = _template(cfg, template or s.manifest().get("template") or cfg.summary.template)
     system = "\n\n".join(x for x in (SYSTEM, tpl, _glossary(cfg)) if x)
-    text = transcript_text(segs)
+    text = transcript_text(segs, s.manifest().get("speaker_names"))
     header = f"Título de la sesión: {s.title}\n"
     limit = providers.chunk_chars(cfg, provider)
     log.info("[%s] resumiendo con %s", s.id, provider)
@@ -274,6 +276,7 @@ def save_summary(s: Session, r: Resumen, provider: str) -> None:
 
 
 def write_summary(s: Session, cfg: Config, template: str | None = None, provider: str | None = None) -> None:
+    from ..providers import describe
     provider = provider or session_provider(s, cfg)
     r = summarize_session(s, cfg, template, provider)
-    save_summary(s, r, provider)
+    save_summary(s, r, describe(cfg, provider))

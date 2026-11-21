@@ -18,3 +18,6 @@ __pycache__/
 # ajustes personales
 config/config.local.toml
 .env
+
+# .dmg y dependencias compiladas (scripts/build_dmg.sh)
+build/

@@ -4,6 +4,7 @@ import SwiftUI
 /// (con varios monitores podía abrirse en otra pantalla y parecer que no abría).
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BundleQuarantine.prepare()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { Self.showMainWindow() }
         // Diagnóstico del diseño: `RJT_SNAPSHOT=/ruta.png` guarda una imagen de la ventana.
         if let out = ProcessInfo.processInfo.environment["RJT_SNAPSHOT"],
@@ -304,6 +305,41 @@ struct SessionRow: View {
             }
         case .failed:
             Button("Reintentar") { model.retry(session) }.controlSize(.small)
+        }
+    }
+}
+
+
+/// App descargada (.dmg, sin firma de Apple): el usuario ya la aprobó con «Abrir igualmente»,
+/// pero los programas que lleva dentro (Whisper, FFmpeg, Python) siguen marcados como
+/// «descargados» y macOS los bloquearía al lanzarlos. Se quita esa marca de la propia app.
+enum BundleQuarantine {
+    static func prepare() {
+        guard Worker.isBundled else { return }
+        let bundle = Bundle.main.bundlePath
+        // Abierta desde Descargas o desde el .dmg: macOS la ejecuta en una copia de solo lectura.
+        if bundle.contains("/AppTranslocation/") || bundle.hasPrefix("/Volumes/") {
+            AppLog.write("la app se ejecuta fuera de Aplicaciones: \(bundle)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let a = NSAlert()
+                a.messageText = "Mueve la app a Aplicaciones"
+                a.informativeText = "Para que pueda transcribir, arrastra All Meetings Recorder a la carpeta Aplicaciones y ábrela desde allí."
+                a.addButton(withTitle: "Entendido")
+                a.runModal()
+            }
+            return
+        }
+        let probe = (bundle as NSString).appendingPathComponent("Contents/Resources/worker/bin/recorder")
+        guard getxattr(probe, "com.apple.quarantine", nil, 0, 0, 0) >= 0 else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        p.arguments = ["-dr", "com.apple.quarantine", bundle]
+        do {
+            try p.run()
+            p.waitUntilExit()
+            AppLog.write("marca de descarga quitada de la app (\(p.terminationStatus))")
+        } catch {
+            AppLog.write("no se pudo quitar la marca de descarga: \(error.localizedDescription)")
         }
     }
 }

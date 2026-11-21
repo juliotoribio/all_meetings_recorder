@@ -1,0 +1,52 @@
+# Publica la app descargable (.dmg) en GitHub Releases.
+# Se ejecuta al subir una etiqueta de versión (git tag v0.2.0 && git push origin v0.2.0)
+# o a mano desde la pestaña Actions. Los Mac de GitHub son gratis en repositorios públicos.
+name: Publicar .dmg
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Etiqueta de la versión (p. ej. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15   # Apple Silicon
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Python portátil
+        run: uv python install 3.12
+
+      - name: Caché de Whisper y FFmpeg compilados
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/cache
+            build/vendor
+          key: vendor-${{ runner.os }}-whisper1.9.5-ffmpeg9.0.2
+
+      - name: Compilar app y .dmg
+        run: VERSION="${TAG#v}" scripts/build_dmg.sh
+
+      - name: Subir a Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/AllMeetingsRecorder.dmg --clobber
+          else
+            gh release create "$TAG" build/AllMeetingsRecorder.dmg --title "All Meetings Recorder $TAG" --generate-notes
+          fi

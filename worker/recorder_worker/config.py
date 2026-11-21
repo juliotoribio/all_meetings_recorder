@@ -18,13 +18,15 @@ def _p(value: str | Path) -> Path:
 
 
 def _whisper_bin() -> Path:
-    """whisper-cli de Homebrew (Apple Silicon o Intel) o el que esté en el PATH."""
+    """whisper-cli: el que va dentro de la app (primero en el PATH), o el de Homebrew."""
     import shutil
+    found = shutil.which("whisper-cli")
+    if found:
+        return Path(found)
     for c in ("/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"):
         if Path(c).is_file():
             return Path(c)
-    found = shutil.which("whisper-cli")
-    return Path(found) if found else Path("/opt/homebrew/bin/whisper-cli")
+    return Path("/opt/homebrew/bin/whisper-cli")
 
 
 # Modelos descargados desde la app (Configuración) o con install.sh.

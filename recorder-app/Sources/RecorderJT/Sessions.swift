@@ -196,10 +196,17 @@ enum AppLog {
 
 /// Ejecuta el worker de Python (`recorder`) para transcribir.
 enum Worker {
+    /// La app descargada (.dmg) lleva el worker dentro; la instalada con install.sh apunta al del repo.
     static var cliPath: String {
+        if let r = Bundle.main.resourceURL?.appendingPathComponent("worker/bin/recorder").path,
+           FileManager.default.isExecutableFile(atPath: r) { return r }
         // install.sh / bundle_app.sh escriben aquí la ruta del worker de esta copia del repo.
-        (Bundle.main.object(forInfoDictionaryKey: "RJTWorkerCLI") as? String) ?? "/usr/local/bin/recorder"
+        if let p = Bundle.main.object(forInfoDictionaryKey: "RJTWorkerCLI") as? String, !p.isEmpty { return p }
+        return "/usr/local/bin/recorder"
     }
+
+    /// true en la app del .dmg (todo va dentro y no hace falta Homebrew).
+    static var isBundled: Bool { cliPath.hasPrefix(Bundle.main.bundlePath) }
 
     static func run(_ args: [String], background: Bool = false, completion: @escaping (Int32) -> Void) {
         let p = Process()
