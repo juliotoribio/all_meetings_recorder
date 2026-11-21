@@ -45,6 +45,7 @@ def artifacts_from(s: Session, step: str) -> list[Path]:
         paths += [p for p in s.work.glob("*.pieces") if p.is_dir()]
     if "speakers" in later:
         paths += list(s.work.glob("*.emb.npz")) + list(s.work.glob("*.split.json"))
+        paths += list(s.work.glob("*.turns.json"))
     if "merge" in later:
         paths += [s.transcript_json, s.transcript_md, s.transcript_txt, s.work / "voices.json"]
     if "playback" in later:

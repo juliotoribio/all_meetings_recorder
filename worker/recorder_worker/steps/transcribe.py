@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import json
+
 import logging
 import re
 import shutil
@@ -18,7 +20,7 @@ import unicodedata
 from pathlib import Path
 
 from ..config import Config
-from ..session import Session
+from ..session import Session, base_name
 from ..util import PermanentError, StepError, atomic_write_json, read_json, run
 from .audio import track_duration, usable_tracks
 
@@ -235,11 +237,22 @@ def _split_segment(seg: dict, vad: VadMap | None = None) -> list[dict]:
     return pieces
 
 
+def _utf8(s: str) -> str:
+    """Rehace las letras que whisper partió entre dos tokens (p. ej. «é» = C3 + A9)."""
+    return s.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 def parse_whisper_json(path: Path, offset_s: float = 0.0, vad: VadMap | None = None) -> list[dict]:
-    data = read_json(path)
+    # Con -ojf cada token lleva su texto, y whisper puede cortar una letra de
+    # varios bytes entre dos tokens: el JSON no es UTF-8 válido. Se leen los
+    # bytes sueltos tal cual y se recomponen al unir los tokens.
+    data = json.loads(path.read_bytes().decode("utf-8", "surrogateescape"))
     out: list[dict] = []
     for seg in data.get("transcription", []):
         for p in _split_segment(seg, vad):
+            p["text"] = _utf8(p["text"])
+            if "words" in p:
+                p["words"] = [[a, b, _utf8(w)] for a, b, w in p["words"]]
             p["start"] = round(p["start"] + offset_s, 2)
             p["end"] = round(p["end"] + offset_s, 2)
             if "words" in p:
@@ -282,24 +295,45 @@ def pick_model(cfg: Config, quality: str = "max") -> Path:
     raise PermanentError(f"no hay modelo de whisper: descarga uno en Configuración ({w.model.name} o {w.fast_model.name})")
 
 
-def _whisper(cfg: Config, wav: Path, out_prefix: Path, language: str, timeout: float,
-             model: Path | None = None) -> Path:
+def _whisper_args(cfg: Config, language: str, model: Path, vad: bool = True, audio_ctx: int = 0) -> list[str]:
     w = cfg.whisper
-    model = model or pick_model(cfg)
-    cmd = [str(w.bin), "-m", str(model), "-f", str(wav), "-l", language, "-t", str(w.threads),
-           "-mc", "0", "-ojf", "-of", str(out_prefix), "-np"]
-    if _vad_enabled(cfg):
+    cmd = [str(w.bin), "-m", str(model), "-l", language, "-t", str(w.threads), "-mc", "0", "-ojf", "-np"]
+    if audio_ctx:
+        cmd += ["-ac", str(audio_ctx)]
+    if vad and _vad_enabled(cfg):
         cmd += ["--vad", "-vm", str(w.vad_model), *vad_args(cfg)]
-    else:
+    elif vad:
         log.warning("modelo VAD no encontrado (%s): se transcribe sin VAD", w.vad_model)
     prompt = glossary_prompt(cfg, language)
     if prompt:
         cmd += ["--prompt", prompt]
-    run(cmd, timeout=timeout)
+    return cmd
+
+
+def _whisper(cfg: Config, wav: Path, out_prefix: Path, language: str, timeout: float,
+             model: Path | None = None) -> Path:
+    model = model or pick_model(cfg)
+    run([*_whisper_args(cfg, language, model), "-f", str(wav), "-of", str(out_prefix)], timeout=timeout)
     out = Path(f"{out_prefix}.json")  # whisper añade ".json" al prefijo tal cual
     if not out.is_file():
         raise StepError(f"whisper no generó {out.name}")
     return out
+
+
+def _whisper_many(cfg: Config, wavs: list[Path], language: str, timeout: float, model: Path,
+                  audio_ctx: int = 0) -> list[Path]:
+    """Varios archivos en una sola llamada: el modelo se carga una vez y, con
+    "auto", cada archivo detecta su propio idioma. Salida: <archivo>.json.
+    Sin VAD: los trozos ya son voz (turnos sin silencios largos)."""
+    cmd = _whisper_args(cfg, language, model, vad=False, audio_ctx=audio_ctx)
+    for w in wavs:
+        cmd += ["-f", str(w)]
+    run(cmd, timeout=timeout)
+    outs = [w.with_name(w.name + ".json") for w in wavs]
+    missing = [o.name for o in outs if not o.is_file()]
+    if missing:
+        raise StepError(f"whisper no generó {', '.join(missing[:3])}")
+    return outs
 
 
 def _timeout(cfg: Config, seconds: float) -> float:
@@ -328,6 +362,57 @@ def cut_points(intervals: list[tuple[float, float]], duration_s: float, target_s
     return cuts
 
 
+def turn_cuts(turns: list[tuple[float, float, int]], duration_s: float, min_s: float = 1.0,
+              min_gap: float = 0.15) -> list[float]:
+    """Cortes donde cambia la voz (ahí suele cambiar también el idioma).
+
+    Sólo se corta en mitad de un silencio real (≥ `min_gap`) entre un turno
+    y el de otra voz: si pyannote cambia de voz sin pausa suele ser un error
+    suyo a mitad de frase, y cortar ahí partiría la frase. Los trozos de
+    menos de `min_s` se unen al anterior (un "ok" suelto no basta para
+    detectar el idioma).
+    """
+    ts = sorted(turns)
+    if not ts:
+        return []
+    cuts: list[float] = []
+    spk, end = ts[0][2], ts[0][1]
+    for a, b, k in ts[1:]:
+        if k != spk:
+            cut = (end + a) / 2
+            if (a - end >= min_gap and min_s <= cut <= duration_s - min_s
+                    and (not cuts or cut - cuts[-1] >= min_s)):
+                cuts.append(round(cut, 3))
+            spk, end = k, b
+        else:
+            end = max(end, b)
+    return cuts
+
+
+def _write_pieces(wav: Path, pdir: Path, bounds: list[float]) -> list[Path]:
+    """Trozos exactos (por muestra) del WAV de 16 kHz, entre cortes consecutivos."""
+    return _write_pieces_at(wav, pdir, list(zip(bounds, bounds[1:])))
+
+
+def _write_pieces_at(wav: Path, pdir: Path, ranges: list[tuple[float, float]]) -> list[Path]:
+    """Trozos exactos (por muestra) del WAV de 16 kHz para cada rango (inicio, fin)."""
+    import wave
+    out: list[Path] = []
+    with wave.open(str(wav), "rb") as r:
+        sr, n = r.getframerate(), r.getnframes()
+        params = r.getparams()
+        for i, (a, b) in enumerate(ranges):
+            fa, fb = int(round(a * sr)), min(int(round(b * sr)), n)
+            r.setpos(fa)
+            frames = r.readframes(max(fb - fa, 0))
+            p = pdir / f"p{i:04d}.wav"
+            with wave.open(str(p), "wb") as w:
+                w.setparams(params)
+                w.writeframes(frames)
+            out.append(p)
+    return out
+
+
 def _transcribe_pieces(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
                        cuts: list[float], vad_map, model: Path) -> list[dict]:
     pdir = work / f"{stem}.pieces"
@@ -335,17 +420,80 @@ def _transcribe_pieces(cfg: Config, wav: Path, work: Path, stem: str, language: 
     pdir.mkdir(parents=True)
     bounds = [0.0, *cuts, duration_s]
     segs: list[dict] = []
-    for i, (a, b) in enumerate(zip(bounds, bounds[1:])):
-        piece = pdir / f"p{i:04d}.wav"
-        run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(wav), "-ss", f"{a:.2f}",
-             "-t", f"{b - a:.2f}", "-c", "copy", str(piece)], timeout=600)
+    for a, b, piece in zip(bounds, bounds[1:], _write_pieces(wav, pdir, bounds)):
         raw = _whisper(cfg, piece, piece.with_suffix(""), language, _timeout(cfg, b - a), model)
         segs += parse_whisper_json(raw, offset_s=a, vad=vad_map(piece))
     return segs
 
 
+LONG_SILENCE_S = 2.0
+SENTENCE_GAP_S = 0.1  # hueco entre intervalos VAD (ya con 0,2 s de margen a cada lado): pausa real ≳ 0,5 s
+
+
+def silence_cuts(intervals: list[tuple[float, float]], min_gap: float = LONG_SILENCE_S) -> list[float]:
+    """Mitad de cada silencio largo entre intervalos de voz."""
+    return [round((a[1] + b[0]) / 2, 3) for a, b in zip(intervals, intervals[1:]) if b[0] - a[1] >= min_gap]
+
+
+def audio_ctx_for(seconds: float, floor: int = 512) -> int:
+    """Contexto del codificador justo para el trozo (+2 s de margen).
+
+    whisper procesa siempre ventanas de 30 s; con trozos cortos, reducir el
+    contexto lo hace ~2× más rápido. Nunca menos que el trozo: se perdería
+    el final.
+    """
+    need = (seconds + 2.0) / 30.0 * 1500
+    for ctx in (512, 768, 1024):
+        if ctx >= floor and need <= ctx:
+            return ctx
+    return 0  # completo (1500)
+
+
+def _has_speech(a: float, b: float, intervals: list[tuple[float, float]], min_s: float = 0.2) -> bool:
+    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in intervals) >= min_s
+
+
+def _transcribe_turns(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
+                      turns: list[tuple[float, float, int]], model: Path) -> list[dict]:
+    """Un trozo por turno de voz (cada uno detecta su idioma), en pocas llamadas a whisper."""
+    intervals = vad_intervals(cfg, wav) if _vad_enabled(cfg) else []
+    # también en cada pausa entre frases: pyannote a veces junta a dos personas
+    # y, si el trozo mezcla idiomas, whisper se salta las frases del otro
+    pauses = [c for c in silence_cuts(intervals, SENTENCE_GAP_S)]
+    cuts = sorted(set(turn_cuts(turns, duration_s)) | set(pauses))
+    cuts = [c for i, c in enumerate(cuts) if i == 0 or c - cuts[i - 1] >= 1.0]
+    bounds = [0.0, *[c for c in cuts if 0 < c < duration_s], duration_s]
+    pdir = work / f"{stem}.pieces"
+    shutil.rmtree(pdir, ignore_errors=True)
+    pdir.mkdir(parents=True)
+    keep = [(a, b) for a, b in zip(bounds, bounds[1:])
+            if b - a >= 0.3 and (not intervals or _has_speech(a, b, intervals))]
+    if not keep:
+        return []
+    starts = [a for a, _ in keep]
+    pieces = _write_pieces_at(wav, pdir, keep)
+    log.info("idioma automático: %d trozos por turno de voz", len(pieces))
+    groups: dict[int, list[int]] = {}
+    for i, (a, b) in enumerate(keep):
+        # turbo repite texto y desordena tiempos con el contexto reducido: sólo large-v3
+        # medido: turbo con 512 repite texto y desordena tiempos; con 1024 va bien
+        floor = 1024 if "turbo" in model.name else 512
+        groups.setdefault(audio_ctx_for(b - a, floor), []).append(i)
+    raws: dict[int, Path] = {}
+    for ctx, idx in sorted(groups.items()):
+        secs = sum(keep[i][1] - keep[i][0] for i in idx)
+        outs = _whisper_many(cfg, [pieces[i] for i in idx], language,
+                             _timeout(cfg, secs) + 2 * len(idx), model, audio_ctx=ctx)
+        raws.update(zip(idx, outs))
+    segs: list[dict] = []
+    for i in range(len(pieces)):
+        segs += parse_whisper_json(raws[i], offset_s=starts[i])
+    return segs
+
+
 def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str, duration_s: float,
-                   model: Path | None = None) -> list[dict]:
+                   model: Path | None = None,
+                   turns: list[tuple[float, float, int]] | None = None) -> list[dict]:
     """Transcribe una pista completa; si falla, por bloques."""
     model = model or pick_model(cfg)
 
@@ -353,6 +501,8 @@ def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str,
         return VadMap(vad_intervals(cfg, path)) if _vad_enabled(cfg) else None
 
     if language == "auto":
+        if turns:  # un trozo por turno de voz: cada uno detecta su idioma
+            return _transcribe_turns(cfg, wav, work, stem, language, duration_s, turns, model)
         intervals = vad_intervals(cfg, wav) if _vad_enabled(cfg) else []
         cuts = cut_points(intervals, duration_s)
         if cuts:
@@ -380,6 +530,20 @@ def transcribe_wav(cfg: Config, wav: Path, work: Path, stem: str, language: str,
     return segs
 
 
+def _turns_for_language(cfg: Config, s: Session, track: str):
+    """Turnos de voz (pyannote) para cortar por idioma; None si no aplica."""
+    from . import speakers as sp
+    if not (sp.enabled(cfg) and sp.segmentation_enabled(cfg)):
+        return None
+    if base_name(track) not in sp.DIARIZE_TRACKS:
+        return None
+    try:
+        return sp.track_turns(cfg, s, track) or None
+    except Exception:  # noqa: BLE001  (sin turnos: tramos por silencios, como antes)
+        log.warning("[%s] pyannote falló en %s; idioma por tramos largos", s.id, track, exc_info=True)
+        return None
+
+
 class Transcribe:
     name = "transcribe"
 
@@ -395,7 +559,8 @@ class Transcribe:
                 continue
             dur = track_duration(s, t.name)
             log.info("[%s] transcribiendo %s (%.0fs de audio, %s)", s.id, t.name, dur, model.name)
-            segs = transcribe_wav(cfg, s.wav16k(t.name), s.work, t.name, lang, dur, model)
+            turns = _turns_for_language(cfg, s, t.name) if lang == "auto" else None
+            segs = transcribe_wav(cfg, s.wav16k(t.name), s.work, t.name, lang, dur, model, turns)
             segs = clean_segments(segs)
             atomic_write_json(out, {"track": t.name, "language": lang, "model": model.name, "segments": segs})
             log.info("[%s] %s: %d segmentos", s.id, t.name, len(segs))

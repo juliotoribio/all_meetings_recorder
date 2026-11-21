@@ -248,3 +248,56 @@ def test_pick_model_by_quality(tmp_path):
     cfg.whisper.model.write_bytes(b"x")               # los dos: según la calidad
     assert pick_model(cfg, "max") == cfg.whisper.model
     assert pick_model(cfg, "fast") == cfg.whisper.fast_model
+
+
+def test_parse_whisper_json_letra_partida_entre_tokens(tmp_path):
+    """whisper -ojf puede partir «é» (C3 A9) entre dos tokens: JSON no UTF-8."""
+    from recorder_worker.steps.transcribe import parse_whisper_json
+
+    def tok(text: bytes, a: int, b: int) -> bytes:
+        return (b'{"text": "' + text + b'", "offsets": {"from": %d, "to": %d}}' % (a, b))
+
+    toks = b",".join([tok(b" Fue", 0, 300), tok(b" un", 300, 500), tok(b" \xc3", 500, 600),
+                      tok(b"\xa9xito.", 600, 900)])
+    raw = (b'{"transcription": [{"offsets": {"from": 0, "to": 900}, "text": " Fue un \xc3\xa9xito.", '
+           b'"tokens": [' + toks + b']}]}')
+    f = tmp_path / "p.json"
+    f.write_bytes(raw)
+    segs = parse_whisper_json(f)
+    assert segs[0]["text"] == "Fue un éxito."
+    assert [w[2] for w in segs[0]["words"]] == ["Fue", "un", "éxito."]
+
+
+def test_turn_cuts_corta_al_cambiar_de_voz():
+    from recorder_worker.steps.transcribe import turn_cuts
+
+    turns = [(0.0, 5.0, 0), (5.6, 9.0, 1), (9.0, 12.0, 1), (12.6, 12.9, 0), (13.0, 20.0, 2)]
+    # 0→1 en mitad del silencio; 1 sigue; 1→0 a 12.3; 0→2 sin pausa real (0,1 s): no se corta
+    assert turn_cuts(turns, 20.0) == [5.3, 12.3]
+    # cambio de voz sin pausa o pisándose: suele ser error de pyannote a mitad de frase
+    assert turn_cuts([(0.0, 6.0, 0), (5.0, 9.0, 1)], 9.0) == []
+    assert turn_cuts([(0.0, 4.4, 3), (4.4, 6.0, 5)], 6.0) == []
+    assert turn_cuts([], 10.0) == []
+
+
+def test_silence_cuts_y_audio_ctx():
+    from recorder_worker.steps.transcribe import audio_ctx_for, silence_cuts
+
+    assert silence_cuts([(0.0, 3.0), (3.5, 6.0), (9.0, 10.0)]) == [7.5]
+    assert audio_ctx_for(5.0) == 512      # 7 s ≤ 10,24 s
+    assert audio_ctx_for(12.0) == 768     # 14 s ≤ 15,36 s
+    assert audio_ctx_for(23.5) == 0       # nunca menos que el trozo: completo
+    assert audio_ctx_for(5.0, floor=1024) == 1024  # turbo: con 512 repite texto
+
+
+def test_write_pieces_exactos(tmp_path):
+    import wave
+    from recorder_worker.steps.transcribe import _write_pieces
+
+    src = tmp_path / "a.wav"
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(bytes(range(256)) * 250)  # 32000 bytes = 16000 muestras = 1 s
+    pieces = _write_pieces(src, tmp_path, [0.0, 0.25, 1.0])
+    with wave.open(str(pieces[0])) as a, wave.open(str(pieces[1])) as b:
+        assert (a.getnframes(), b.getnframes()) == (4000, 12000)

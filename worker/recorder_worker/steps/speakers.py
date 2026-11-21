@@ -51,10 +51,21 @@ def _get_extractor(cfg: Config):
     global _extractor
     if _extractor is None:
         import sherpa_onnx
-        c = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(cfg.speakers.model),
-                                                        num_threads=cfg.whisper.threads)
-        _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(c)
+        for provider in _providers():
+            c = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(cfg.speakers.model),
+                                                            num_threads=cfg.whisper.threads, provider=provider)
+            try:
+                _extractor = sherpa_onnx.SpeakerEmbeddingExtractor(c)
+                break
+            except Exception:  # noqa: BLE001  (CoreML no disponible: CPU)
+                log.warning("huellas de voz con %s no disponibles; se usa la CPU", provider)
     return _extractor
+
+
+def _providers() -> list[str]:
+    """CoreML (chip de Apple) para las huellas de voz: ~2× más rápido; si no, CPU."""
+    import platform
+    return ["coreml", "cpu"] if platform.system() == "Darwin" and platform.machine() == "arm64" else ["cpu"]
 
 
 def _read_wav(path: Path) -> np.ndarray:
@@ -87,17 +98,25 @@ def _get_diarizer(cfg: Config):
     global _diarizer
     if _diarizer is None:
         import sherpa_onnx as so
-        c = so.OfflineSpeakerDiarizationConfig(
-            segmentation=so.OfflineSpeakerSegmentationModelConfig(
-                pyannote=so.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(cfg.speakers.segmentation)),
-                num_threads=cfg.whisper.threads),
-            embedding=so.SpeakerEmbeddingExtractorConfig(model=str(cfg.speakers.model),
-                                                         num_threads=cfg.whisper.threads),
-            clustering=so.FastClusteringConfig(num_clusters=-1, threshold=cfg.speakers.threshold),
-            min_duration_on=0.3, min_duration_off=0.5)
-        if not c.validate():
-            raise RuntimeError("configuración de pyannote no válida")
-        _diarizer = so.OfflineSpeakerDiarization(c)
+        for provider in _providers():
+            c = so.OfflineSpeakerDiarizationConfig(
+                segmentation=so.OfflineSpeakerSegmentationModelConfig(
+                    pyannote=so.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(cfg.speakers.segmentation)),
+                    num_threads=cfg.whisper.threads),
+                # la segmentación va igual en CPU; las huellas, el doble de rápido con CoreML
+                embedding=so.SpeakerEmbeddingExtractorConfig(model=str(cfg.speakers.model),
+                                                             num_threads=cfg.whisper.threads, provider=provider),
+                clustering=so.FastClusteringConfig(num_clusters=-1, threshold=cfg.speakers.threshold),
+                min_duration_on=0.3, min_duration_off=0.5)
+            if not c.validate():
+                raise RuntimeError("configuración de pyannote no válida")
+            try:
+                _diarizer = so.OfflineSpeakerDiarization(c)
+                break
+            except Exception:  # noqa: BLE001
+                log.warning("pyannote con %s no disponible; se usa la CPU", provider)
+        if _diarizer is None:
+            raise RuntimeError("no se pudo cargar pyannote")
     return _diarizer
 
 
@@ -182,6 +201,21 @@ def split_by_turns(segs: list[dict], turns: list[tuple[float, float, int]],
     return out
 
 
+def turns_path(s: Session, track: str) -> Path:
+    return s.work / f"{track}.turns.json"
+
+
+def track_turns(cfg: Config, s: Session, track: str) -> list[tuple[float, float, int]]:
+    """Turnos de voz de una pista, guardados para no calcularlos dos veces
+    (transcribir los usa para cortar por idioma; luego, para cortar frases)."""
+    p = turns_path(s, track)
+    if p.is_file():
+        return [tuple(t) for t in read_json(p)["turns"]]
+    turns = speaker_turns(cfg, _read_wav(s.wav16k(track)))
+    atomic_write_json(p, {"track": track, "turns": [list(t) for t in turns]})
+    return turns
+
+
 def split_path(s: Session, track: str) -> Path:
     return s.work / f"{track}.split.json"
 
@@ -192,7 +226,7 @@ def split_track(cfg: Config, s: Session, track: str) -> list[dict]:
     turns: list[tuple[float, float, int]] = []
     if segmentation_enabled(cfg) and any(x.get("words") for x in segs):
         try:
-            turns = speaker_turns(cfg, _read_wav(s.wav16k(track)))
+            turns = track_turns(cfg, s, track)
         except Exception:  # noqa: BLE001  (sin cortes: se usa la frase entera)
             log.warning("[%s] pyannote falló en %s; se usan las frases enteras", s.id, track, exc_info=True)
     out = split_by_turns(segs, turns)
