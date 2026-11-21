@@ -1,4 +1,4 @@
-"""Paso 5: resumen estructurado con Claude.
+"""Paso 5: resumen estructurado con la IA que elija el usuario (o la de su agente).
 
 Sólo se envía TEXTO (la transcripción); el audio nunca sale del Mac.
 """
@@ -186,7 +186,7 @@ def summarize_session(s: Session, cfg: Config, template: str | None = None,
         raise PermanentError("la transcripción está vacía; no hay nada que resumir")
 
     provider = provider or session_provider(s, cfg)
-    tpl = _template(cfg, template or s.manifest().get("template") or cfg.claude.template)
+    tpl = _template(cfg, template or s.manifest().get("template") or cfg.summary.template)
     system = "\n\n".join(x for x in (SYSTEM, tpl, _glossary(cfg)) if x)
     text = transcript_text(segs)
     header = f"Título de la sesión: {s.title}\n"
@@ -247,12 +247,33 @@ class Summarize:
     def is_done(self, s: Session, cfg: Config) -> bool:
         if not summary_requested(s, cfg):
             return True  # sólo transcripción: no se gasta en LLM
+        m = s.manifest()
+        if m.get("summarize") is None and m.get("summary_status") == "failed":
+            return True  # el automático ya falló: se reintenta a mano desde la app
         return s.summary_json.is_file() and s.summary_md.is_file()
 
     def run(self, s: Session, cfg: Config, template: str | None = None) -> None:
-        provider = session_provider(s, cfg)
-        r = summarize_session(s, cfg, template, provider)
-        atomic_write_json(s.summary_json, {**r.model_dump(), "_provider": provider})
-        atomic_write_text(s.summary_md, to_markdown(s, r) + f"\n_Resumen generado con: {provider}_\n")
-        if not s.manifest().get("title_user_set") and r.titulo_sugerido:
-            s.update_manifest(suggested_title=r.titulo_sugerido)
+        if s.manifest().get("summarize") is None:
+            # Resumen automático: si falla, la transcripción sigue valiendo; se anota el error.
+            try:
+                write_summary(s, cfg, template)
+            except (PermanentError, StepError) as e:
+                log.warning("[%s] resumen automático falló: %s", s.id, e)
+                s.update_manifest(summary_status="failed", summary_error=str(e).splitlines()[0][:300])
+            return
+        write_summary(s, cfg, template)
+
+
+def save_summary(s: Session, r: Resumen, provider: str) -> None:
+    atomic_write_json(s.summary_json, {**r.model_dump(), "_provider": provider})
+    atomic_write_text(s.summary_md, to_markdown(s, r) + f"\n_Resumen generado con: {provider}_\n")
+    fields = {"summary_status": "done", "summary_error": None, "summary_provider": provider}
+    if not s.manifest().get("title_user_set") and r.titulo_sugerido:
+        fields["suggested_title"] = r.titulo_sugerido
+    s.update_manifest(**fields)
+
+
+def write_summary(s: Session, cfg: Config, template: str | None = None, provider: str | None = None) -> None:
+    provider = provider or session_provider(s, cfg)
+    r = summarize_session(s, cfg, template, provider)
+    save_summary(s, r, provider)

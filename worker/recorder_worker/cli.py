@@ -1,9 +1,10 @@
-"""CLI: recorder {import,resume,copy,status,retry,once,run,set-key,doctor}."""
+"""CLI: recorder {import,list,show,search,summarize,save-summary,templates,template,ai-test,resume,copy,status,retry,once,run,set-key,doctor}."""
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import logging.handlers
 import re
@@ -243,9 +244,215 @@ def cmd_run(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
     return 0
 
 
+# --- consultas para agentes (sólo leen; salida estable en JSON o texto) ---
+
+def _session_info(s: Session) -> dict:
+    m = s.manifest()
+    dur = None
+    pb = s.path / "playback.json"
+    if pb.is_file():
+        try:
+            dur = round(float(json.loads(pb.read_text(encoding="utf-8")).get("duration_s") or 0), 1) or None
+        except (ValueError, OSError):
+            dur = None
+    return {
+        "id": s.id,
+        "title": m.get("title") or s.id,
+        "started_at": m.get("started_at"),
+        "duration_s": dur,
+        "status": m.get("pipeline") or m.get("status"),
+        "recording": s.is_recording,
+        "source": m.get("source"),
+        "language": m.get("language"),
+        "speaker_names": m.get("speaker_names") or {},
+        "transcript_txt": str(s.transcript_txt) if s.transcript_txt.is_file() else None,
+        "transcript_json": str(s.transcript_json) if s.transcript_json.is_file() else None,
+        "summary_md": str(s.summary_md) if s.summary_md.is_file() else None,
+    }
+
+
+def _all_sessions(cfg: Config) -> list[Session]:
+    dirs = sorted((p.parent for p in cfg.paths.sessions.glob("*/manifest.json")), key=lambda d: d.name, reverse=True)
+    return [Session(d) for d in dirs]
+
+
+def cmd_list(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    rows = [_session_info(s) for s in _all_sessions(cfg)[: a.limit]]
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print(f"Sin sesiones en {cfg.paths.sessions}")
+    for r in rows:
+        dur = fmt_ts(r["duration_s"]) if r["duration_s"] else "--:--:--"
+        print(f"{r['id']}  {dur}  [{r['status']}]  {r['title']}")
+    return 0
+
+
+def cmd_show(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    s = find_session(cfg, q, a.session)
+    if a.format == "info":
+        print(json.dumps(_session_info(s), ensure_ascii=False, indent=2))
+        return 0
+    f = {"txt": s.transcript_txt, "md": s.transcript_md, "json": s.transcript_json, "summary": s.summary_md}[a.format]
+    if not f.is_file():
+        raise SystemExit(f"{s.id}: todavía no hay {a.format} (estado: {_session_info(s)['status']}).")
+    sys.stdout.write(f.read_text(encoding="utf-8"))
+    return 0
+
+
+def cmd_search(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    needle = a.text.casefold()
+    hits = []
+    for s in _all_sessions(cfg):
+        if not s.transcript_txt.is_file():
+            continue
+        for n, line in enumerate(s.transcript_txt.read_text(encoding="utf-8").splitlines(), 1):
+            if needle in line.casefold():
+                hits.append({"id": s.id, "title": s.title, "line": n, "text": line.strip()})
+                if len(hits) >= a.limit:
+                    break
+        if len(hits) >= a.limit:
+            break
+    if a.json:
+        print(json.dumps(hits, ensure_ascii=False, indent=2))
+    else:
+        for h in hits:
+            print(f"{h['id']}:{h['line']}  {h['text']}")
+        if not hits:
+            print("Sin resultados.")
+    return 0
+
+
+# --- resúmenes: con la IA conectada en la app, o hechos por un agente ---
+
+def cmd_summarize(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    """Resume ya, sin pasar por la cola (la app lo usa para el botón Resumir)."""
+    from .providers import describe
+    from .steps.summarize import write_summary
+    from .util import PermanentError, StepError
+    s = find_session(cfg, q, a.session)
+    if not s.transcript_json.is_file():
+        raise SystemExit(f"{s.id}: aún no hay transcripción.")
+    provider = a.provider or cfg.summary.provider
+    s.update_manifest(summary_status="running", summary_error=None)
+    print(f"Resumiendo {s.id} con {describe(cfg, provider)}…", flush=True)
+    try:
+        write_summary(s, cfg, a.template, provider)
+    except (PermanentError, StepError) as e:
+        msg = str(e).splitlines()[0][:300]
+        s.update_manifest(summary_status="failed", summary_error=msg)
+        print(f"❌ {msg}", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        msg = f"{type(e).__name__}: {e}"[:300]
+        s.update_manifest(summary_status="failed", summary_error=msg)
+        log.exception("[%s] resumen falló", s.id)
+        print(f"❌ {msg}", file=sys.stderr)
+        return 1
+    print(f"✅ {s.summary_md}")
+    return 0
+
+
+def cmd_save_summary(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    """Guarda un resumen hecho por un agente (JSON con el esquema, o Markdown)."""
+    from pydantic import ValidationError
+
+    from .steps.summarize import Resumen, save_summary
+    from .util import atomic_write_text
+    s = find_session(cfg, q, a.session)
+    text = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
+    text = text.strip()
+    if not text:
+        raise SystemExit("El resumen está vacío.")
+    by = a.by or "agente"
+    if text.startswith("{"):
+        try:
+            r = Resumen.model_validate_json(text)
+        except ValidationError as e:
+            raise SystemExit(f"El JSON no cumple el esquema (recorder template --schema):\n{e}") from e
+        save_summary(s, r, by)
+    else:
+        s.summary_json.unlink(missing_ok=True)
+        atomic_write_text(s.summary_md, text + f"\n\n_Resumen generado con: {by}_\n")
+        s.update_manifest(summary_status="done", summary_error=None, summary_provider=by)
+    print(f"✅ Guardado: {s.summary_md}")
+    return 0
+
+
+def _template_names(cfg: Config) -> list[str]:
+    return sorted(f.stem for f in cfg.paths.templates.glob("*.md"))
+
+
+def cmd_templates(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    names = _template_names(cfg)
+    if a.json:
+        print(json.dumps(names, ensure_ascii=False))
+    else:
+        for n in names:
+            print(n + ("  (por defecto)" if n == cfg.summary.template else ""))
+    return 0
+
+
+def cmd_template(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    """Instrucciones completas para que un agente haga el resumen igual que la app."""
+    from .steps.summarize import SYSTEM, Resumen, _glossary, _template
+    schema = json.dumps(Resumen.model_json_schema(), ensure_ascii=False, indent=2)
+    if a.schema:
+        print(schema)
+        return 0
+    name = a.name or cfg.summary.template
+    parts = [SYSTEM.strip(), _template(cfg, name), _glossary(cfg),
+             "Devuelve un único objeto JSON que cumpla este JSON Schema:\n" + schema,
+             "Para guardarlo en la app: recorder save-summary <id> --by \"<tu nombre de agente>\" < resumen.json"]
+    print("\n\n".join(x for x in parts if x))
+    return 0
+
+
+def cmd_ai_account(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    from .providers import cli_account
+    info = cli_account(a.tool or cfg.cli.tool)
+    print(json.dumps(info, ensure_ascii=False))
+    return 0 if info["logged_in"] else 1
+
+
+def cmd_ai_test(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    from .providers import ping
+    provider = a.provider or cfg.summary.provider
+    try:
+        msg, ok = ping(cfg, provider), True
+    except Exception as e:  # noqa: BLE001
+        msg, ok = str(e).splitlines()[0][:300], False
+    if a.json:
+        print(json.dumps({"ok": ok, "message": msg}, ensure_ascii=False))
+    else:
+        print(("✅ " if ok else "❌ ") + msg)
+    return 0 if ok else 1
+
+
 def cmd_set_key(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
     from .providers import KEYCHAIN
     svc = KEYCHAIN[a.provider]
+    if a.status:
+        found = subprocess.run(["security", "find-generic-password", "-s", svc], capture_output=True).returncode == 0
+        print("sí" if found else "no")
+        return 0 if found else 1
+    if a.delete:
+        subprocess.run(["security", "delete-generic-password", "-s", svc], capture_output=True)
+        print("Clave borrada.")
+        return 0
+    if a.stdin:
+        # La app la pasa por la entrada estándar; `security -i` la lee también por stdin,
+        # así nunca aparece en la lista de procesos.
+        key = sys.stdin.readline().strip()
+        if not key or any(c in key for c in "\"\\\n\r ") or not key.isprintable():
+            raise SystemExit("Clave vacía o con caracteres no válidos.")
+        res = subprocess.run(["security", "-i"], input=f'add-generic-password -U -s {svc} -a recorder-jt -w "{key}"\n',
+                             capture_output=True, text=True)
+        ok = res.returncode == 0 and subprocess.run(["security", "find-generic-password", "-s", svc],
+                                                     capture_output=True).returncode == 0
+        print("✅ Guardada." if ok else f"No se pudo guardar: {res.stderr.strip()[:200]}")
+        return 0 if ok else 1
     print(f"Se guardará la API key de {a.provider} en el Llavero (servicio '{svc}').")
     print("macOS te pedirá la key a continuación (no se muestra al escribir):")
     # `-w` como último argumento hace que `security` la pida de forma interactiva,
@@ -365,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--quality", choices=["max", "fast"], help="max = large-v3; fast = turbo (más rápido)")
     sp.add_argument("--template", help="plantilla de resumen (config/templates/<nombre>.md)")
     sp.add_argument("--resume", action="store_true", help="además de transcribir, resumir con un LLM")
-    sp.add_argument("--provider", choices=PROVIDERS, help="proveedor del resumen (deepseek, local, claude)")
+    sp.add_argument("--provider", choices=PROVIDERS, help="proveedor del resumen (none, local, openai, claude, deepseek)")
     sp.add_argument("--no-copy", action="store_true", help="no copiar el resultado al portapapeles")
     sp.add_argument("--queue-only", action="store_true", help="dejar en cola para el worker")
     sp.set_defaults(fn=cmd_import)
@@ -373,6 +580,52 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("status", help="estado de la cola")
     sp.add_argument("-n", "--limit", type=int, default=20)
     sp.set_defaults(fn=cmd_status)
+
+    sp = sub.add_parser("list", help="listar sesiones (para agentes: --json)")
+    sp.add_argument("-n", "--limit", type=int, default=50)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_list)
+
+    sp = sub.add_parser("show", help="imprimir la transcripción de una sesión")
+    sp.add_argument("session", nargs="?", default="last", help="id (o parte) o 'last'")
+    sp.add_argument("--format", choices=["txt", "md", "json", "summary", "info"], default="txt")
+    sp.set_defaults(fn=cmd_show)
+
+    sp = sub.add_parser("search", help="buscar texto en todas las transcripciones")
+    sp.add_argument("text")
+    sp.add_argument("-n", "--limit", type=int, default=50)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_search)
+
+    sp = sub.add_parser("summarize", help="resumir ya con la IA conectada (sin pasar por la cola)")
+    sp.add_argument("session", nargs="?", default="last")
+    sp.add_argument("--provider", choices=PROVIDERS)
+    sp.add_argument("--template")
+    sp.set_defaults(fn=cmd_summarize)
+
+    sp = sub.add_parser("save-summary", help="guardar un resumen hecho por un agente (JSON o Markdown)")
+    sp.add_argument("session")
+    sp.add_argument("--file", help="archivo con el resumen (por defecto, la entrada estándar)")
+    sp.add_argument("--by", help="quién lo hizo (p. ej. 'Claude Code')")
+    sp.set_defaults(fn=cmd_save_summary)
+
+    sp = sub.add_parser("templates", help="plantillas de resumen disponibles")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_templates)
+
+    sp = sub.add_parser("template", help="instrucciones de resumen para un agente (prompt + esquema)")
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--schema", action="store_true", help="sólo el JSON Schema")
+    sp.set_defaults(fn=cmd_template)
+
+    sp = sub.add_parser("ai-account", help="¿Codex o Claude Code tienen sesión iniciada? (JSON)")
+    sp.add_argument("--tool", choices=["codex", "claude"])
+    sp.set_defaults(fn=cmd_ai_account)
+
+    sp = sub.add_parser("ai-test", help="probar la conexión con la IA elegida")
+    sp.add_argument("--provider", choices=PROVIDERS)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_ai_test)
 
     sp = sub.add_parser("retry", help="reintentar una sesión")
     sp.add_argument("session")
@@ -404,7 +657,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(fn=cmd_chunks)
     sub.add_parser("run", help="worker continuo (para launchd)").set_defaults(fn=cmd_run)
     sp = sub.add_parser("set-key", help="guardar una API key en el Llavero de macOS")
-    sp.add_argument("provider", nargs="?", default="deepseek", choices=["deepseek", "claude"])
+    sp.add_argument("provider", nargs="?", default="openai", choices=["openai", "claude", "deepseek"])
+    sp.add_argument("--stdin", action="store_true", help="leer la clave de la entrada estándar (la usa la app)")
+    sp.add_argument("--delete", action="store_true", help="borrar la clave guardada")
+    sp.add_argument("--status", action="store_true", help="¿hay clave guardada? (sí/no)")
     sp.set_defaults(fn=cmd_set_key)
     sp = sub.add_parser("doctor", help="verificar dependencias y configuración")
     sp.add_argument("--json", action="store_true", help="estado en JSON (para la app)")

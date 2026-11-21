@@ -22,6 +22,11 @@ struct SessionInfo: Identifiable, Equatable {
     var playbackDuration: Double?
     var peaks: [Float] = []
     var playbackVersion: Date?
+    /// Resumen: summary.md, y su estado si se pidió (running | done | failed).
+    var hasSummary = false
+    var summaryStatus: String?
+    var summaryError: String?
+    var summaryProvider: String?
 
     var playbackURL: URL { dir.appendingPathComponent("playback.m4a") }
 
@@ -127,6 +132,10 @@ enum SessionStore {
                 } else if tracks.keys.contains(where: { $0.hasPrefix("mixed") }) {
                     info.origin = "Micrófono"
                 }
+                info.hasSummary = fm.fileExists(atPath: dir.appendingPathComponent("summary.md").path)
+                info.summaryStatus = m["summary_status"] as? String
+                info.summaryError = m["summary_error"] as? String
+                info.summaryProvider = m["summary_provider"] as? String
                 let pj = dir.appendingPathComponent("playback.json")
                 if let mtime = (try? fm.attributesOfItem(atPath: pj.path))?[.modificationDate] as? Date,
                    fm.fileExists(atPath: info.playbackURL.path),

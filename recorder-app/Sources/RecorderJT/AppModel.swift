@@ -678,6 +678,32 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(FileManager.default.fileExists(atPath: s.transcript.path) ? s.transcript : s.dir)
     }
 
+    // MARK: - resúmenes (IA del usuario; no usa la cola de Whisper)
+
+    @Published private(set) var summarizing: Set<String> = []
+    private var summaryCache: [String: (Date, String)] = [:]
+
+    func summarize(_ s: SessionInfo) {
+        guard !summarizing.contains(s.id) else { return }
+        summarizing.insert(s.id)
+        AppLog.write("resumir \(s.id) con \(AISettings.shared.displayName)")
+        Task {
+            let (code, out) = await Worker.capture(["summarize", s.id, "--template", AISettings.shared.template])
+            summarizing.remove(s.id)
+            if code != 0 { AppLog.write("resumen falló: \(out.suffix(300))") }
+            refresh()
+        }
+    }
+
+    func summaryText(_ s: SessionInfo) -> String {
+        let url = s.dir.appendingPathComponent("summary.md")
+        guard let mtime = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date else { return "" }
+        if let c = summaryCache[s.id], c.0 == mtime { return c.1 }
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        summaryCache[s.id] = (mtime, text)
+        return text
+    }
+
     func openFolder() {
         try? FileManager.default.createDirectory(at: SessionStore.sessionsDir, withIntermediateDirectories: true)
         NSWorkspace.shared.open(SessionStore.sessionsDir)

@@ -12,9 +12,17 @@ language  = "auto"      # auto | es | en  (la app guarda el idioma elegido en ca
 glossary_file = "config/glossary.txt"
 
 [summary]
-# false = sólo transcribe (gratis). El resumen se pide con: recorder resume [--provider ...]
+# false = sólo transcribe (gratis). El resumen se pide desde la app o con: recorder summarize <id>
+# La sección IA de la app guarda sus elecciones en ~/RecorderJT/ai.json, que manda sobre esto.
 auto     = false
-provider = "deepseek"   # deepseek | local | claude
+provider = "none"       # none | local | openai | claude | deepseek
+template = "general"    # config/templates/<nombre>.md
+
+[openai]
+# Cualquier API compatible con OpenAI (OpenAI, Groq, OpenRouter, Mistral, Gemini, Ollama…).
+# La clave: recorder set-key openai
+# base_url = "https://api.openai.com/v1"
+# model    = "gpt-4.1-mini"
 
 [deepseek]
 base_url = "https://api.deepseek.com"
@@ -29,7 +37,6 @@ context_length = 32768
 [claude]
 model    = "claude-opus-5-5"
 effort   = "medium"     # low | medium | high
-template = "general"    # config/templates/<nombre>.md
 
 [paths]
 home = "~/RecorderJT"   # sessions/, resumenes/, logs/, recorder.db

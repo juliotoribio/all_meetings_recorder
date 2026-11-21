@@ -229,7 +229,7 @@ struct MainView: View {
                     .allowsHitTesting(false)
             }
         }
-        .sheet(isPresented: $showSetup) { SetupView { showSetup = false } }
+        .sheet(isPresented: $showSetup) { SetupView(model: model) { showSetup = false } }
         .onAppear {
             setup.check()
             let env = ProcessInfo.processInfo.environment
@@ -433,21 +433,39 @@ struct TranscriptionSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            group("Idioma", [("auto", "Auto"), ("es", "Español"), ("en", "English")], model.language, model.setLanguage)
-            group("Calidad", [("max", "Máxima"), ("fast", "Rápida")], model.quality, model.setQuality)
-            Text(model.isRecording ? "Se aplica desde la próxima grabación."
-                 : "Auto detecta el idioma cada pocos minutos. Rápida es ~2,5× más veloz y algo menos precisa.")
-                .font(.system(size: 11.5)).foregroundStyle(T.muted)
-                .fixedSize(horizontal: false, vertical: true)
+            TranscriptionChoices(model: model)
         }
         .padding(16)
         .frame(width: 300)
         .background(Color(hex: 0x1B1B1B))
         .environment(\.colorScheme, .dark)
     }
+}
 
-    private func group(_ label: String, _ options: [(String, String)], _ value: String,
-                       _ set: @escaping (String) -> Void) -> some View {
+/// Idioma + calidad + nota (se usa en el panel emergente y en Configuración).
+struct TranscriptionChoices: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ChoiceGroup(label: "Idioma", options: [("auto", "Auto"), ("es", "Español"), ("en", "English")],
+                    value: model.language, set: model.setLanguage)
+        ChoiceGroup(label: "Calidad", options: [("max", "Máxima"), ("fast", "Rápida")],
+                    value: model.quality, set: model.setQuality)
+        Text(model.isRecording ? "Se aplica desde la próxima grabación."
+             : "Auto detecta el idioma de cada frase. Rápida usa el modelo turbo: algo más veloz y un poco menos precisa.")
+            .font(.system(size: 11.5)).foregroundStyle(T.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Selector tipo cápsula con 2-3 opciones.
+struct ChoiceGroup: View {
+    let label: String
+    let options: [(String, String)]
+    let value: String
+    let set: (String) -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label).font(.system(size: 12)).foregroundStyle(T.muted)
             HStack(spacing: 0) {
@@ -952,6 +970,9 @@ struct TranscriptView: View {
                 VStack(spacing: 12) {
                     head
                     AudioCard(model: model, session: session, player: player, lines: lines)
+                    if session.hasTranscript && session.state != .recording {
+                        SummaryCard(model: model, session: session)
+                    }
                     TranscriptList(model: model, session: session, player: player, lines: lines)
                 }
                 .padding(.bottom, 8)

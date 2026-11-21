@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from recorder_worker.config import Config, Paths
 from recorder_worker.queue import Queue
 from recorder_worker.steps.merge import is_echo, merge_tracks, to_markdown
@@ -301,3 +303,151 @@ def test_write_pieces_exactos(tmp_path):
     pieces = _write_pieces(src, tmp_path, [0.0, 0.25, 1.0])
     with wave.open(str(pieces[0])) as a, wave.open(str(pieces[1])) as b:
         assert (a.getnframes(), b.getnframes()) == (4000, 12000)
+
+
+def test_cli_para_agentes(tmp_path: Path, capsys):
+    """list/show/search: salida estable para agentes, sin tocar las sesiones."""
+    import argparse
+    import json
+
+    from recorder_worker import cli
+    from recorder_worker.config import Config, Paths
+    from recorder_worker.queue import Queue
+
+    cfg = Config(paths=Paths(home=tmp_path / "home"))
+    cfg.paths.ensure()
+    for sid, txt in (("2026-11-01_0900_a_aa11", "[00:00:01] Ana: hola presupuesto\n"), ("2026-11-02_0900_b_bb22", None)):
+        d = cfg.paths.sessions / sid
+        d.mkdir()
+        (d / "manifest.json").write_text(json.dumps({"id": sid, "title": sid[-4:], "pipeline": "done" if txt else "processing"}))
+        if txt:
+            (d / "transcript.txt").write_text(txt)
+    q = Queue(cfg.paths.db)
+
+    cli.cmd_list(cfg, q, argparse.Namespace(limit=10, json=True))
+    rows = json.loads(capsys.readouterr().out)
+    assert [r["id"][-4:] for r in rows] == ["bb22", "aa11"]  # más reciente primero
+    assert rows[1]["transcript_txt"].endswith("transcript.txt") and rows[0]["transcript_txt"] is None
+
+    cli.cmd_show(cfg, q, argparse.Namespace(session="aa11", format="txt"))
+    assert "presupuesto" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.cmd_show(cfg, q, argparse.Namespace(session="bb22", format="txt"))
+
+    cli.cmd_search(cfg, q, argparse.Namespace(text="PRESUPUESTO", limit=10, json=True))
+    hits = json.loads(capsys.readouterr().out)
+    assert hits == [{"id": "2026-11-01_0900_a_aa11", "title": "aa11", "line": 1, "text": "[00:00:01] Ana: hola presupuesto"}]
+
+
+def test_ia_por_defecto_ninguna_y_ai_json(tmp_path: Path, monkeypatch):
+    """Sin IA elegida no se envía nada; la app manda con ai.json."""
+    import json
+
+    from recorder_worker import providers
+    from recorder_worker.config import apply_ai_settings
+    from recorder_worker.util import PermanentError
+
+    cfg = Config(paths=Paths(home=tmp_path))
+    assert cfg.summary.provider == "none"
+    with pytest.raises(PermanentError, match="ninguna IA"):
+        providers.generate(cfg, "none", "s", "u")
+
+    (tmp_path / "ai.json").write_text(json.dumps({
+        "provider": "openai", "auto": True, "template": "comercial",
+        "openai_base_url": "https://api.groq.com/openai/v1", "openai_model": "m1", "local_model": ""}))
+    apply_ai_settings(cfg)
+    assert (cfg.summary.provider, cfg.summary.auto, cfg.summary.template) == ("openai", True, "comercial")
+    assert (cfg.openai.base_url, cfg.openai.model) == ("https://api.groq.com/openai/v1", "m1")
+    assert cfg.local.model  # un valor vacío no borra el de por defecto
+
+    monkeypatch.setattr(providers, "api_key", lambda p: None)
+    with pytest.raises(PermanentError, match="No hay clave"):
+        providers.generate(cfg, "openai", "s", "u")
+
+
+def test_compatible_openai_sin_response_format(monkeypatch):
+    """Si el modelo rechaza response_format, se repite sin él."""
+    from recorder_worker import providers
+    from recorder_worker.config import Config
+    from recorder_worker.util import PermanentError
+
+    cfg = Config()
+    cfg.openai.base_url, cfg.openai.model = "https://x/v1", "m"
+    monkeypatch.setattr(providers, "api_key", lambda p: "k")
+    bodies = []
+    ok = '{"titulo_sugerido":"t","resumen_ejecutivo":"r","participantes_mencionados":[],"temas":[],"decisiones":["d"],"action_items":[],"preguntas_abiertas":[],"riesgos":[]}'
+
+    def fake_chat(url, headers, body, timeout, check_length=True):
+        bodies.append(body)
+        if "response_format" in body:
+            raise PermanentError("petición rechazada (400): response_format no soportado")
+        return ok
+
+    monkeypatch.setattr(providers, "_chat", fake_chat)
+    r = providers.generate(cfg, "openai", "sistema", "texto")
+    assert r.decisiones == ["d"] and len(bodies) == 2 and "response_format" not in bodies[1]
+
+
+def test_save_summary_de_agente(tmp_path: Path, capsys):
+    import argparse
+    import io
+    import json
+    import sys as _sys
+
+    from recorder_worker import cli
+    from recorder_worker.queue import Queue
+
+    cfg = Config(paths=Paths(home=tmp_path / "home"))
+    cfg.paths.ensure()
+    d = cfg.paths.sessions / "2026-11-03_0900_c_cc33"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({"id": d.name, "title": "Reunión"}))
+    q = Queue(cfg.paths.db)
+    payload = {"titulo_sugerido": "Plan Q1", "resumen_ejecutivo": "Se acordó el plan.", "participantes_mencionados": ["Ana"],
+               "temas": [], "decisiones": ["Lanzar en enero"], "action_items": [], "preguntas_abiertas": [], "riesgos": []}
+    old = _sys.stdin
+    try:
+        _sys.stdin = io.StringIO(json.dumps(payload))
+        cli.cmd_save_summary(cfg, q, argparse.Namespace(session="cc33", file=None, by="Claude Code"))
+        md = (d / "summary.md").read_text()
+        assert "Lanzar en enero" in md and "Claude Code" in md
+        m = json.loads((d / "manifest.json").read_text())
+        assert m["summary_status"] == "done" and m["summary_provider"] == "Claude Code" and m["suggested_title"] == "Plan Q1"
+
+        _sys.stdin = io.StringIO("## Resumen\n\nTexto libre.")
+        cli.cmd_save_summary(cfg, q, argparse.Namespace(session="cc33", file=None, by=None))
+        assert (d / "summary.md").read_text().startswith("## Resumen") and not (d / "summary.json").exists()
+
+        _sys.stdin = io.StringIO('{"titulo_sugerido": 1}')
+        with pytest.raises(SystemExit):
+            cli.cmd_save_summary(cfg, q, argparse.Namespace(session="cc33", file=None, by=None))
+    finally:
+        _sys.stdin = old
+
+
+def test_suscripcion_via_codex(tmp_path: Path, monkeypatch):
+    """Proveedor «tu suscripción»: llama a codex exec con el esquema estricto y lee su salida."""
+    import json
+    import stat
+
+    from recorder_worker import providers
+    from recorder_worker.config import Config
+
+    schema = providers.strict_schema({"type": "object", "title": "X", "properties": {"a": {"type": "string", "title": "A"}}})
+    assert schema == {"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": False, "required": ["a"]}
+
+    fake = tmp_path / "codex"
+    fake.write_text('#!/bin/sh\n'
+                    'while [ $# -gt 0 ]; do case "$1" in -o) OUT="$2"; shift;; --output-schema) SCH="$2"; shift;; esac; shift; done\n'
+                    'cat > /dev/null\n'
+                    'test -s "$SCH" || exit 3\n'
+                    'printf \'%s\' \'{"titulo_sugerido":"t","resumen_ejecutivo":"r","participantes_mencionados":[],"temas":[],'
+                    '"decisiones":["ok"],"action_items":[],"preguntas_abiertas":[],"riesgos":[]}\' > "$OUT"\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(providers, "find_cli", lambda tool: str(fake))
+    cfg = Config()
+    cfg.cli.tool = "codex"
+    r = providers.generate(cfg, "cli", "sistema", "transcripción")
+    assert r.decisiones == ["ok"]
+    assert "tu suscripción" in providers.describe(cfg, "cli")
+    assert json.dumps(schema)

@@ -79,9 +79,31 @@ class SpeakersConfig:
 
 @dataclass
 class SummaryConfig:
-    # false = sólo transcribir; el resumen se pide con `recorder resume`.
+    # false = sólo transcribir; el resumen se pide desde la app o con `recorder summarize`.
     auto: bool = False
-    provider: str = "deepseek"  # deepseek | local | claude
+    # none (ninguna: no se envía nada) | cli (tu suscripción) | local | openai (compatible) | claude | deepseek
+    provider: str = "none"
+    template: str = "general"
+
+
+@dataclass
+class CLIConfig:
+    """Tu suscripción a través de la herramienta oficial ya instalada y con sesión iniciada:
+    codex (ChatGPT) o claude (Claude Code). No usa API ni claves."""
+    tool: str = "codex"   # codex | claude
+    model: str = ""       # vacío = el modelo por defecto de la herramienta
+    timeout_s: float = 1200
+    max_input_chars: int = 300_000
+
+
+@dataclass
+class OpenAIConfig:
+    """Cualquier API compatible con OpenAI: OpenAI, DeepSeek, Groq, OpenRouter, Mistral, Gemini, Ollama…"""
+    base_url: str = ""
+    model: str = ""
+    max_tokens: int = 8000
+    timeout_s: float = 300
+    max_input_chars: int = 300_000
 
 
 @dataclass
@@ -140,6 +162,8 @@ class Config:
     summary: SummaryConfig = field(default_factory=SummaryConfig)
     speakers: SpeakersConfig = field(default_factory=SpeakersConfig)
     deepseek: DeepSeekConfig = field(default_factory=DeepSeekConfig)
+    openai: OpenAIConfig = field(default_factory=OpenAIConfig)
+    cli: CLIConfig = field(default_factory=CLIConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
     paths: Paths = field(default_factory=Paths)
     worker: Worker = field(default_factory=Worker)
@@ -189,6 +213,8 @@ def load_config(path: Path | None = None) -> Config:
             cfg.speakers.segmentation = _p(sp.pop("segmentation"))
         _apply(cfg.speakers, sp)
         _apply(cfg.deepseek, data.get("deepseek", {}))
+        _apply(cfg.openai, data.get("openai", {}))
+        _apply(cfg.cli, data.get("cli", {}))
         _apply(cfg.local, data.get("local", {}))
         paths_data = data.get("paths", {})
         _apply(cfg.paths, paths_data)
@@ -207,4 +233,34 @@ def load_config(path: Path | None = None) -> Config:
         for k in ("sessions", "inbox", "db", "logs"):
             setattr(cfg.paths, k, None)
         cfg.paths.__post_init__()
+    apply_ai_settings(cfg)
     return cfg
+
+
+AI_FIELDS = {
+    "provider": ("summary", "provider"), "auto": ("summary", "auto"), "template": ("summary", "template"),
+    "openai_base_url": ("openai", "base_url"), "openai_model": ("openai", "model"),
+    "local_base_url": ("local", "base_url"), "local_model": ("local", "model"),
+    "claude_model": ("claude", "model"),
+    "cli_tool": ("cli", "tool"), "cli_model": ("cli", "model"),
+}
+
+
+def ai_settings_path(cfg: Config) -> Path:
+    return cfg.paths.home / "ai.json"
+
+
+def apply_ai_settings(cfg: Config) -> None:
+    """La sección IA de la app guarda sus elecciones en <home>/ai.json (las claves van al Llavero)."""
+    import json
+    f = ai_settings_path(cfg)
+    if not f.is_file():
+        return
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return
+    for key, (section, attr) in AI_FIELDS.items():
+        value = data.get(key)
+        if value is not None and value != "":
+            setattr(getattr(cfg, section), attr, value)
