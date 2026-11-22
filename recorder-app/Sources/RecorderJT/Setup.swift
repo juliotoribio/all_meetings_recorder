@@ -220,7 +220,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         rawValue + " " + {
             switch self {
             case .transcription: "idioma calidad whisper modelo turbo máxima rápida español english auto"
-            case .recording: "micrófono audio reunión sistema fuentes grabar teams zoom meet"
+            case .recording: "micrófono audio reunión sistema fuentes grabar teams zoom meet botón flotante"
             case .ai: "resumen resumir suscripción chatgpt codex plan openai gemini deepseek groq mistral openrouter claude anthropic ollama lm studio clave api key plantilla"
             case .components: "whisper ffmpeg modelos instalar descargar homebrew voces pyannote"
             case .agents: "agente claude codex cursor cli api mcp comandos json terminal automatizar resumen"
@@ -233,6 +233,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
 struct SetupView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var setup = SetupModel.shared
+    @ObservedObject var floating = FloatingRecorder.shared
     var onClose: (() -> Void)?
     @State private var section: SetupSection = .transcription
     @State private var query = ""
@@ -386,6 +387,12 @@ struct SetupView: View {
             SettingsRow(title: "Audio de la reunión", detail: "Lo que suena en el Mac: Teams, Zoom, Meet, el navegador… Se separa por voces.") {
                 Toggle("", isOn: Binding(get: { model.systemOn }, set: { model.setSystem($0) }))
                     .labelsHidden().toggleStyle(.switch).tint(T.accent)
+            }
+        }
+        SettingsGroup(title: "Botón flotante",
+                      footer: "Arrástralo a donde quieras; recuerda la posición. Clic derecho para abrir la app u ocultarlo.") {
+            SettingsRow(title: "Mostrar el botón flotante", detail: "Un botón siempre visible, encima de Teams, Zoom o Meet, para grabar y detener sin abrir la app.") {
+                Toggle("", isOn: $floating.enabled).labelsHidden().toggleStyle(.switch).tint(T.accent)
             }
         }
     }

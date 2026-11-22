@@ -16,6 +16,7 @@ rm -rf "$APP"
 rm -rf "$HOME/Applications/Recorder JT.app"   # nombre anterior de la app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/RecorderJT"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 sed "s#__WORKER_CLI__#$REPO/worker/.venv/bin/recorder#" Resources/Info.plist > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 

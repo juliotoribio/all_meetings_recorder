@@ -92,7 +92,10 @@ struct RecorderApp: App {
         // (la barra de menú puede quedar oculta tras el notch).
         Window("All Meetings Recorder", id: "main") {
             MainView(model: model)
-                .onAppear { model.requestMicAtLaunch() }
+                .onAppear {
+                    model.requestMicAtLaunch()
+                    FloatingRecorder.shared.attach(model)
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 780)

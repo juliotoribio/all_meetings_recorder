@@ -91,6 +91,7 @@ build_app() {
   local R="$APP/Contents/Resources"
   mkdir -p "$APP/Contents/MacOS" "$R/bin" "$R/worker/bin"
   cp "$BIN" "$APP/Contents/MacOS/RecorderJT"
+  cp recorder-app/Resources/AppIcon.icns "$R/"
   # Sin ruta de worker: la app usa el que lleva dentro.
   sed -e "s#__WORKER_CLI__##" \
       -e "s#<string>0.1.0</string>#<string>${VERSION%%-*}</string>#" recorder-app/Resources/Info.plist > "$APP/Contents/Info.plist"
