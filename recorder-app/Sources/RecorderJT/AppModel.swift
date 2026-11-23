@@ -41,6 +41,16 @@ final class AppModel: ObservableObject {
     /// Calidad: "max" (large-v3, el más preciso) o "fast" (turbo, ~2,5× más rápido).
     @Published private(set) var quality = UserDefaults.standard.string(forKey: "quality") ?? "max"
 
+    /// Cada cuánto llega el texto definitivo (Whisper) mientras se graba: 30, 60 o 120 s.
+    @Published private(set) var chunkSeconds = Int(ChunkPolicy.target)
+
+    func setChunkSeconds(_ value: String) {
+        guard let s = Int(value), s != chunkSeconds else { return }
+        chunkSeconds = s
+        UserDefaults.standard.set(Double(s), forKey: "chunkSeconds")
+        AppLog.write("texto definitivo cada \(s) s\(isRecording ? " (desde el próximo bloque)" : "")")
+    }
+
     func setQuality(_ code: String) {
         guard code != quality else { return }
         quality = code
@@ -498,7 +508,10 @@ final class AppModel: ObservableObject {
         let fm = FileManager.default
         var recovered = false
         for s in SessionStore.list(limit: 50) where s.state == .recording {
-            var tracks = (SessionStore.manifest(s.dir)?["tracks"] as? [String: Any]) ?? [:]
+            let manifest = SessionStore.manifest(s.dir)
+            var tracks = (manifest?["tracks"] as? [String: Any]) ?? [:]
+            // inicio aproximado de cada bloque, con la duración con la que se grabó
+            let chunkLen = (manifest?["chunk_seconds"] as? NSNumber)?.doubleValue ?? ChunkPolicy.target
             let chunksDir = s.dir.appendingPathComponent("chunks")
             let files = ((try? fm.contentsOfDirectory(atPath: chunksDir.path)) ?? []).sorted()
             for f in files where f.hasSuffix(".caf") {
@@ -509,7 +522,7 @@ final class AppModel: ObservableObject {
                 let size = ((try? fm.attributesOfItem(atPath: chunksDir.appendingPathComponent(f).path))?[.size] as? Int) ?? 0
                 if tracks[key] == nil && size > 8192 {
                     // inicio aproximado: bloques de duración objetivo
-                    tracks[key] = ["file": "chunks/\(f)", "first_host_time_s": Double(i) * ChunkPolicy.target]
+                    tracks[key] = ["file": "chunks/\(f)", "first_host_time_s": Double(i) * chunkLen]
                 }
             }
             SessionStore.update(s.dir, tracks.isEmpty

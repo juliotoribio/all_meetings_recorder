@@ -219,7 +219,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
     var keywords: String {
         rawValue + " " + {
             switch self {
-            case .transcription: "idioma calidad whisper modelo turbo máxima rápida español english auto"
+            case .transcription: "idioma calidad whisper modelo turbo máxima rápida español english auto texto definitivo bloques minutos segundos vivo"
             case .recording: "micrófono audio reunión sistema fuentes grabar teams zoom meet botón flotante"
             case .ai: "resumen resumir suscripción chatgpt codex plan openai gemini deepseek groq mistral openrouter claude anthropic ollama lm studio clave api key plantilla"
             case .components: "whisper ffmpeg modelos instalar descargar homebrew voces pyannote"
@@ -371,6 +371,14 @@ struct SetupView: View {
             }
             SettingsRow(title: "Calidad", detail: "Máxima usa large-v3. Rápida usa turbo: algo más veloz y un poco menos precisa.") {
                 CompactChoice(options: [("max", "Máxima"), ("fast", "Rápida")], value: model.quality, set: model.setQuality)
+            }
+        }
+        SettingsGroup(title: "Mientras grabas",
+                      footer: "El texto en vivo aparece al instante; el definitivo (Whisper, con las voces separadas) lo sustituye por tramos. Al detener solo queda el último tramo.") {
+            SettingsRow(title: "Texto definitivo cada",
+                        detail: "Más seguido = lo ves antes, pero el Mac trabaja más durante la reunión y las voces se separan un poco peor.") {
+                CompactChoice(options: [("30", "30 s"), ("60", "1 min"), ("120", "2 min")],
+                              value: String(model.chunkSeconds), set: model.setChunkSeconds)
             }
         }
     }
