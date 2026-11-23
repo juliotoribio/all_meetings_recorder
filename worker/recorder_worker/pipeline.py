@@ -12,6 +12,7 @@ from pathlib import Path
 from .config import Config
 from .queue import Queue
 from .session import Session
+from . import storage
 from .steps.audio import Normalize, Validate
 from .steps.export import Export
 from .steps.merge import Merge
@@ -28,6 +29,8 @@ STEPS = [Validate(), Normalize(), Transcribe(), Speakers(), Merge(), Playback(),
 LIVE_STEPS = [Validate(), Normalize(), Transcribe(), Speakers(), Merge()]
 STEP_NAMES = [s.name for s in STEPS]
 READY_STATUSES = {"recorded", "recovered"}
+# Pasos que leen el audio original: se saltan si ya se borró (ver storage.py).
+AUDIO_STEPS = {"validate", "normalize", "transcribe", "speakers", "merge", "playback"}
 
 
 def artifacts_from(s: Session, step: str) -> list[Path]:
@@ -80,7 +83,10 @@ def discover(cfg: Config, q: Queue) -> int:
 
 def run_steps(s: Session, cfg: Config, on_step=None) -> None:
     s.work.mkdir(exist_ok=True)
+    purged = bool(s.manifest().get("audio_purged"))
     for step in STEPS:
+        if purged and step.name in AUDIO_STEPS:
+            continue
         if step.is_done(s, cfg):
             continue
         if on_step:
@@ -134,6 +140,7 @@ def process_job(cfg: Config, q: Queue, session_id: str) -> bool:
     q.done(session_id)
     _mark(s, "done", None)
     log.info("[%s] sesión completada", session_id)
+    storage.after_done(cfg, s)
     return True
 
 
@@ -192,9 +199,13 @@ def run_forever(cfg: Config, q: Queue) -> None:
         if (n := q.recover_orphans()):
             log.warning("%d sesiones interrumpidas se reanudan", n)
         log.info("worker iniciado; vigilando %s", cfg.paths.sessions)
+        last_sweep = 0.0
         while True:
             discover(cfg, q)
             if drain(cfg, q) == 0:
+                if time.monotonic() - last_sweep > 600:
+                    storage.sweep(cfg)
+                    last_sweep = time.monotonic()
                 time.sleep(cfg.worker.poll_seconds)
     finally:
         lock.release()

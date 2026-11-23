@@ -19,6 +19,7 @@ from .pipeline import STEP_NAMES, WorkerLock, discover, drain, process_job, proc
 from .providers import PROVIDERS
 from .queue import Queue
 from .session import Session
+from . import storage
 from .util import atomic_write_json, ffprobe_duration, fmt_ts
 
 log = logging.getLogger("recorder")
@@ -164,6 +165,12 @@ def cmd_status(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
 
 def cmd_retry(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
     s = find_session(cfg, q, a.session)
+    if a.from_step and s.manifest().get("audio_purged"):
+        if a.from_step in ("validate", "normalize", "transcribe", "speakers", "merge", "playback"):
+            print("El audio original se borró: se vuelve a transcribir desde el audio comprimido "
+                  "(sin separar tu micrófono del resto).")
+            storage.restore_from_playback(s)
+            a.from_step = "validate"
     if a.from_step:
         reset_from(s, a.from_step)
     q.reset(s.id)
@@ -233,9 +240,35 @@ def cmd_once(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
         q.recover_orphans()
         discover(cfg, q)
         n = drain(cfg, q)
+        storage.sweep(cfg)
     finally:
         lock.release()
     print(f"Sesiones procesadas: {n}")
+    return 0
+
+
+def cmd_storage(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    info = storage.reclaimable(cfg)
+    if a.json:
+        print(json.dumps(info))
+    else:
+        print(f"Política: {info['policy']} · se pueden liberar {info['bytes'] / 1e9:.1f} GB "
+              f"de {info['sessions']} sesiones terminadas")
+    return 0
+
+
+def cmd_free_space(cfg: Config, q: Queue, a: argparse.Namespace) -> int:
+    if not a.yes:
+        info = storage.reclaimable(cfg)
+        print(f"Se borraría el audio original de {info['sessions']} sesiones ({info['bytes'] / 1e9:.1f} GB). "
+              "Se conservan transcripciones, resúmenes y el audio comprimido para escuchar. "
+              "No se puede deshacer: repite con --yes.")
+        return 1
+    res = storage.purge_all(cfg)
+    if a.json:
+        print(json.dumps(res))
+    else:
+        print(f"Liberados {res['bytes'] / 1e9:.1f} GB de {res['sessions']} sesiones.")
     return 0
 
 
@@ -656,6 +689,13 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--wait", type=float, default=1800)
     sp.set_defaults(fn=cmd_chunks)
     sub.add_parser("run", help="worker continuo (para launchd)").set_defaults(fn=cmd_run)
+    sp = sub.add_parser("storage", help="cuánto ocupa el audio original que ya no hace falta")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_storage)
+    sp = sub.add_parser("free-space", help="borrar el audio original de las sesiones terminadas")
+    sp.add_argument("--yes", action="store_true", help="confirmar (no se puede deshacer)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_free_space)
     sp = sub.add_parser("set-key", help="guardar una API key en el Llavero de macOS")
     sp.add_argument("provider", nargs="?", default="openai", choices=["openai", "claude", "deepseek"])
     sp.add_argument("--stdin", action="store_true", help="leer la clave de la entrada estándar (la usa la app)")

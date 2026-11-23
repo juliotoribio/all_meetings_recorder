@@ -34,6 +34,8 @@ def env(tmp_path, monkeypatch):
     cfg = Config(paths=Paths(home=tmp_path / "home"))
     cfg.worker.notify = False
     cfg.paths.ensure()
+    # Los tests revisan los intermedios: se conserva el audio (la limpieza se prueba aparte).
+    (cfg.paths.home / "storage.json").write_text('{"keep_audio": "always"}')
     sdir = cfg.paths.sessions / "2026-11-17_1003_test_ab12"
     shutil.copytree(FIXTURE, sdir)
     calls = []
@@ -156,6 +158,15 @@ def test_default_only_transcribes_then_resume_on_demand(env):
     assert pipeline.process_job(cfg, q, s.id)
     assert s.calls == ["deepseek"] and s.summary_md.is_file()
     assert s.segments("mic").stat().st_mtime == seg_mtime
+
+    # Borrado el audio original, la sesión se sigue pudiendo resumir.
+    from recorder_worker import storage
+    assert storage.purge(s) > 0 and not list(s.work.glob("*.16k.wav"))
+    s.update_manifest(provider="claude")
+    pipeline.reset_from(s, "summarize")
+    q.reset(s.id)
+    assert pipeline.process_job(cfg, q, s.id)
+    assert s.calls[-1] == "claude" and s.transcript_json.is_file() and (s.path / "playback.m4a").is_file()
 
 
 def _cut_in_silence(cfg, wavs, near_s):

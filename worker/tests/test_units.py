@@ -451,3 +451,84 @@ def test_suscripcion_via_codex(tmp_path: Path, monkeypatch):
     assert r.decisiones == ["ok"]
     assert "tu suscripción" in providers.describe(cfg, "cli")
     assert json.dumps(schema)
+
+
+import json  # noqa: E402
+
+from recorder_worker.session import Session  # noqa: E402
+
+
+def _done_session(root: Path, sid: str, **extra) -> Session:
+    d = root / sid
+    (d / "chunks").mkdir(parents=True)
+    (d / "work" / "system.000.pieces").mkdir(parents=True)
+    (d / "chunks" / "mic_000.caf").write_bytes(b"x" * 1000)
+    (d / "chunks" / "system_000.caf").write_bytes(b"x" * 1000)
+    (d / "work" / "mic.000.16k.wav").write_bytes(b"x" * 300)
+    (d / "work" / "mic.000.env.npy").write_bytes(b"x" * 10)
+    (d / "work" / "system.000.pieces" / "p0.wav").write_bytes(b"x" * 50)
+    for keep in ("mic.000.segments.json", "voices.json", "system.000.emb.npz", "validate.json"):
+        (d / "work" / keep).write_text("{}")
+    for keep in ("transcript.json", "transcript.md", "playback.m4a", "playback.json"):
+        (d / keep).write_text("{}")
+    m = {"id": sid, "status": "recorded", "pipeline": "done",
+         "tracks": {"mic.000": {"file": "chunks/mic_000.caf", "first_host_time_s": 0},
+                    "system.000": {"file": "chunks/system_000.caf", "first_host_time_s": 0}}}
+    m.update(extra)
+    (d / "manifest.json").write_text(json.dumps(m))
+    return Session(d)
+
+
+def test_storage_borra_audio_y_conserva_lo_util(tmp_path: Path):
+    from recorder_worker import storage
+    cfg = Config(paths=Paths(home=tmp_path))
+    s = _done_session(cfg.paths.sessions, "a")
+    assert storage.keep_policy(cfg) == "delete"
+    assert storage.reclaimable(cfg) == {"policy": "delete", "sessions": 1, "bytes": 2360}
+    storage.after_done(cfg, s)
+    assert not (s.path / "chunks").exists()
+    assert not list(s.work.glob("*.16k.wav")) and not list(s.work.glob("*.pieces"))
+    for keep in ("transcript.json", "playback.m4a", "work/voices.json", "work/mic.000.segments.json",
+                 "work/system.000.emb.npz"):
+        assert (s.path / keep).is_file(), keep
+    m = s.manifest()
+    assert m["audio_purged"] and m["audio_freed_bytes"] == 2360
+    assert storage.purge(s) == 0  # idempotente
+
+
+def test_storage_7_dias_y_sesiones_antiguas(tmp_path: Path):
+    from recorder_worker import storage
+    cfg = Config(paths=Paths(home=tmp_path))
+    storage.storage_path(cfg).write_text(json.dumps({"keep_audio": "7d"}))
+    s = _done_session(cfg.paths.sessions, "nueva")
+    old = _done_session(cfg.paths.sessions, "antigua")  # sin plazo: no se toca sola
+    rec = _done_session(cfg.paths.sessions, "grabando", status="recording")
+    storage.after_done(cfg, s)
+    exp = s.manifest()["audio_expires_at"]
+    assert storage.sweep(cfg, now=exp - 1) == 0 and (s.path / "chunks").is_dir()
+    assert storage.sweep(cfg, now=exp + 1) == 1 and not (s.path / "chunks").exists()
+    assert (old.path / "chunks").is_dir()
+    assert storage.purge_all(cfg)["sessions"] == 1  # sólo la antigua; la que graba, nunca
+    assert (rec.path / "chunks").is_dir()
+
+
+def test_storage_siempre_no_borra(tmp_path: Path):
+    from recorder_worker import storage
+    cfg = Config(paths=Paths(home=tmp_path))
+    storage.storage_path(cfg).write_text(json.dumps({"keep_audio": "always"}))
+    s = _done_session(cfg.paths.sessions, "a")
+    storage.after_done(cfg, s)
+    assert (s.path / "chunks").is_dir() and not s.manifest().get("audio_expires_at")
+
+
+def test_storage_retranscribir_sin_original(tmp_path: Path):
+    from recorder_worker import storage
+    from recorder_worker.pipeline import AUDIO_STEPS
+    cfg = Config(paths=Paths(home=tmp_path))
+    s = _done_session(cfg.paths.sessions, "a")
+    storage.purge(s)
+    storage.restore_from_playback(s)
+    m = s.manifest()
+    assert m["tracks"] == {"mixed": {"file": "audio.m4a", "first_host_time_s": 0.0}}
+    assert not m["audio_purged"] and (s.path / "audio.m4a").is_file()
+    assert "transcribe" in AUDIO_STEPS

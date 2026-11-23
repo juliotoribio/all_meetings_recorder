@@ -208,7 +208,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .transcription: "Cómo se transcriben las grabaciones y los audios que subas. Todo ocurre en este Mac."
-        case .recording: "Qué audio se graba en cada reunión."
+        case .recording: "Qué audio se graba y cuánto se guarda."
         case .ai: "Conecta tu IA para resumir. Con tu suscripción de ChatGPT o Claude no pagas API; una IA local es gratis y privada; con una clave de API pagas por uso."
         case .agents: "Conecta Claude Code, Codex, Cursor u otro agente que ejecute comandos en este Mac. Usa el CLI local: sin servidor ni claves, y el audio no sale del Mac."
         case .components: "Lo que necesita la app para transcribir. Una vez instalado, funciona sin internet."
@@ -220,7 +220,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         rawValue + " " + {
             switch self {
             case .transcription: "idioma calidad whisper modelo turbo máxima rápida español english auto texto definitivo bloques minutos segundos vivo"
-            case .recording: "micrófono audio reunión sistema fuentes grabar teams zoom meet botón flotante"
+            case .recording: "micrófono audio reunión sistema fuentes grabar teams zoom meet botón flotante espacio disco borrar audio original liberar"
             case .ai: "resumen resumir suscripción chatgpt codex plan openai gemini deepseek groq mistral openrouter claude anthropic ollama lm studio clave api key plantilla"
             case .components: "whisper ffmpeg modelos instalar descargar homebrew voces pyannote"
             case .agents: "agente claude codex cursor cli api mcp comandos json terminal automatizar resumen"
@@ -403,6 +403,7 @@ struct SetupView: View {
                 Toggle("", isOn: $floating.enabled).labelsHidden().toggleStyle(.switch).tint(T.accent)
             }
         }
+        StorageSettingsGroup()
     }
 
     // MARK: Componentes
